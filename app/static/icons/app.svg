@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-label="ArbeitszeitTracker">
+  <rect width="256" height="256" rx="52" fill="#2563eb"/>
+  <circle cx="128" cy="128" r="72" fill="#ffffff"/>
+  <circle cx="128" cy="128" r="8" fill="#2563eb"/>
+  <path d="M128 78v52l36 24" fill="none" stroke="#2563eb" stroke-width="18" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M70 204h116" fill="none" stroke="#ffffff" stroke-width="16" stroke-linecap="round" opacity=".88"/>
+</svg>

@@ -1,0 +1,10 @@
+pywebview==5.4
+pystray==0.19.5
+Pillow==10.4.0
+holidays==0.52
+pandas==2.2.2
+openpyxl==3.1.5
+fpdf2==2.7.9
+pytest==8.3.2
+pywin32==306; platform_system == "Windows"
+

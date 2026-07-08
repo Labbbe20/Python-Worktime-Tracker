@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ArbeitszeitTracker</title>
+  <link rel="icon" type="image/svg+xml" href="../static/icons/app.svg">
+  <link rel="icon" type="image/png" href="../static/icons/app.png">
+  <link rel="stylesheet" href="../static/css/app.css">
+</head>
+<body>
+  <div class="shell">
+    <aside class="sidebar" aria-label="Hauptnavigation">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">A</span>
+        <div>
+          <strong>ArbeitszeitTracker</strong>
+          <small>Lokal & privat</small>
+        </div>
+      </div>
+      <nav class="nav">
+        <button data-view="dashboard" class="active">🏠 Dashboard</button>
+        <button data-view="calendar">📅 Kalender</button>
+        <button data-view="entries">📝 Einträge</button>
+        <button data-view="statistics">📊 Statistiken</button>
+        <button data-view="vacation">🏖 Urlaub und Abwesenheiten</button>
+        <button data-view="settings">⚙ Einstellungen</button>
+      </nav>
+      <button id="refresh-view" class="sidebar-refresh" type="button">↻ Aktualisieren</button>
+    </aside>
+    <main class="content" id="content" tabindex="-1">
+      <section class="loading">Lade Arbeitszeitdaten …</section>
+    </main>
+  </div>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <script src="../static/vendor/chart.umd.js"></script>
+  <script src="../static/js/app.js"></script>
+</body>
+</html>
