@@ -19,6 +19,18 @@ ArbeitszeitTracker.exe
 
 Diese Exe enthält Python und die benötigten Pakete. Auf dem Ziel-PC muss dafür kein `pip install` ausgeführt werden. Beim Start läuft der Tracker im Tray. Die App öffnest du über das Tray-Menü mit `App öffnen`, `Urlaub und Abwesenheiten` oder `Einstellungen`.
 
+Wenn der Code auf GitHub liegt, muss die Exe nicht auf dem Windows-PC gebaut werden:
+
+1. Repository auf GitHub öffnen.
+2. `Actions` öffnen.
+3. Workflow `Build Windows EXE` auswählen.
+4. Falls noch kein Lauf vorhanden ist: `Run workflow` klicken.
+5. Den neuesten erfolgreichen Lauf öffnen.
+6. Unten bei `Artifacts` die Datei `ArbeitszeitTracker-Windows` herunterladen.
+7. ZIP entpacken und `ArbeitszeitTracker.exe` starten.
+
+Das ist der empfohlene Weg für PCs ohne Python-Installation.
+
 Beim ersten Start unter Windows legt der Tracker eine Verknüpfung im persönlichen Autostart-Ordner an:
 
 ```text
@@ -27,14 +39,14 @@ Beim ersten Start unter Windows legt der Tracker eine Verknüpfung im persönlic
 
 Es werden keine Registry-Einträge und keine geplanten Aufgaben verwendet.
 
-## Windows-Exe bauen
+## Windows-Exe lokal bauen
 
-Der Build muss auf Windows erfolgen, weil PyInstaller keine Windows-Exe auf macOS erzeugen kann.
+Das ist nur für Entwicklung gedacht. Der Build muss auf Windows erfolgen, weil PyInstaller keine Windows-Exe auf macOS erzeugen kann. Auf einem normalen Ziel-PC ist dieser Schritt nicht nötig, wenn du die Exe aus GitHub Actions herunterlädst.
 
-Für den Build-PC:
+PowerShell im Projektordner:
 
-```bat
-build_windows.bat
+```powershell
+.\build_windows.bat
 ```
 
 Das Skript installiert die Build-Abhängigkeiten und erzeugt:
