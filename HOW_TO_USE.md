@@ -19,17 +19,21 @@ ArbeitszeitTracker.exe
 
 Diese Exe enthält Python und die benötigten Pakete. Auf dem Ziel-PC muss dafür kein `pip install` ausgeführt werden. Beim Start läuft der Tracker im Tray. Die App öffnest du über das Tray-Menü mit `App öffnen`, `Urlaub und Abwesenheiten` oder `Einstellungen`.
 
-Wenn der Code auf GitHub liegt, muss die Exe nicht auf dem Windows-PC gebaut werden:
+Wenn der Code auf GitHub liegt, muss die Exe nicht auf dem Windows-PC gebaut werden. Für öffentliche Downloads ist **GitHub Releases** besser als **Actions Artifacts**, weil Release-Dateien auch ohne GitHub-Login heruntergeladen werden können.
 
 1. Repository auf GitHub öffnen.
 2. `Actions` öffnen.
 3. Workflow `Build Windows EXE` auswählen.
-4. Falls noch kein Lauf vorhanden ist: `Run workflow` klicken.
-5. Den neuesten erfolgreichen Lauf öffnen.
-6. Unten bei `Artifacts` die Datei `ArbeitszeitTracker-Windows` herunterladen.
-7. ZIP entpacken und `ArbeitszeitTracker.exe` starten.
+4. `Run workflow` klicken.
+5. Bei `release_tag` eine neue Version eintragen, z. B. `v1.0.0`, `v1.0.1` oder `v2026.07.09`.
+6. Den Workflow starten und warten, bis er grün ist.
+7. Im Repository rechts oder oben zu `Releases` gehen.
+8. Die neueste Release öffnen.
+9. Unter `Assets` die Datei `ArbeitszeitTracker.exe` herunterladen und starten.
 
 Das ist der empfohlene Weg für PCs ohne Python-Installation.
+
+Hinweis: Die Datei unter `Actions` → `Artifacts` ist eher für interne Build-Tests gedacht und kann einen GitHub-Login verlangen. Für andere Nutzer immer die Datei aus `Releases` verwenden.
 
 Beim ersten Start unter Windows legt der Tracker eine Verknüpfung im persönlichen Autostart-Ordner an:
 

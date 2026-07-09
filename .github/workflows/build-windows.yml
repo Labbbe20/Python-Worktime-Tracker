@@ -2,12 +2,20 @@ name: Build Windows EXE
 
 on:
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Optional: Release-Tag, z. B. v1.0.0. Wenn gesetzt, wird eine öffentliche GitHub Release erstellt."
+        required: false
+        default: ""
   push:
     branches:
       - main
       - master
     tags:
       - "v*"
+
+permissions:
+  contents: write
 
 jobs:
   build-windows:
@@ -40,3 +48,18 @@ jobs:
           name: ArbeitszeitTracker-Windows
           path: dist/ArbeitszeitTracker.exe
           if-no-files-found: error
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v') || github.event.inputs.release_tag != ''
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.release_tag || github.ref_name }}
+          name: ArbeitszeitTracker ${{ github.event.inputs.release_tag || github.ref_name }}
+          body: |
+            Fertige Windows-Version.
+
+            Download:
+            - ArbeitszeitTracker.exe herunterladen
+            - starten
+            - keine Python-Installation nötig
+          files: dist/ArbeitszeitTracker.exe
