@@ -52,6 +52,10 @@ class WorktimeRecorder:
     def auto_start_day(self) -> RecorderEvent | None:
         today = today_str()
         with self._lock, self._connect() as conn:
+            settings = database.get_settings(conn)
+            if not _setting_enabled(settings, "automatic_work_start_enabled"):
+                self.logger.info("Automatischer Arbeitsbeginn ist deaktiviert")
+                return None
             open_today = conn.execute(
                 "SELECT 1 FROM segments WHERE date = ? AND end_time IS NULL LIMIT 1",
                 (today,),
@@ -115,9 +119,11 @@ class WorktimeRecorder:
         recovered: list[RecorderEvent] = []
         today = today_str()
         with self._lock, self._connect() as conn:
+            settings = database.get_settings(conn)
+            automatic_recovery_enabled = _setting_enabled(settings, "automatic_recovery_enabled")
             open_segments = [row for row in database.get_open_segments(conn) if row["date"] < today]
             for row in open_segments:
-                automatic_end_time = self._heartbeat_recovery_end_time(conn, row)
+                automatic_end_time = self._heartbeat_recovery_end_time(conn, row) if automatic_recovery_enabled else None
                 if automatic_end_time:
                     database.close_segment(conn, row["id"], automatic_end_time)
                     calculations.recalculate_day(conn, row["date"])
@@ -200,15 +206,26 @@ class WorktimeRecorder:
     def _end_non_work_and_resume(self, expected_type: str, label: str) -> RecorderEvent | None:
         now = current_time_str()
         today = today_str()
+        resume_key = "auto_resume_after_break_enabled" if expected_type == "BREAK" else "auto_resume_after_absence_enabled"
+        auto_resume = True
         with self._lock, self._connect() as conn:
+            settings = database.get_settings(conn)
+            auto_resume = _setting_enabled(settings, resume_key)
             current = database.get_current_open_segment(conn)
             if current and current["type"] == expected_type:
                 database.close_segment(conn, current["id"], now)
                 calculations.recalculate_day(conn, current["date"])
             else:
                 self.logger.warning("%s angefordert, aber kein passendes Segment offen", label)
+        if not auto_resume:
+            self.logger.info("%s ohne automatische Arbeitsfortsetzung", label)
+            return RecorderEvent(expected_type, label, now, today)
         resumed = self.start_work(source="MANUAL", reason=label)
         return resumed or RecorderEvent(expected_type, label, now, today)
+
+    def is_setting_enabled(self, key: str, default: bool = True) -> bool:
+        with self._connect() as conn:
+            return _setting_enabled(database.get_settings(conn), key, default=default)
 
     def _detect_location(self, conn, settings: dict[str, str] | None = None) -> str:
         existing_location = self._existing_day_location(conn, today_str())
@@ -259,3 +276,8 @@ def _start_time_with_buffer(now: str, source: str, detected_location: str, setti
     adjusted_minute = (total_seconds % 3600) // 60
     adjusted_second = total_seconds % 60
     return f"{adjusted_hour:02d}:{adjusted_minute:02d}:{adjusted_second:02d}"
+
+
+def _setting_enabled(settings: dict[str, str], key: str, default: bool = True) -> bool:
+    fallback = "1" if default else "0"
+    return str(settings.get(key, fallback)).strip().lower() in {"1", "true", "ja", "yes", "on"}

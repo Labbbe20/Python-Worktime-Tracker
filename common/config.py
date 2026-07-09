@@ -43,6 +43,12 @@ DEFAULT_SETTINGS: dict[str, str] = {
     "homeoffice_check_timeout_ms": "1500",
     "office_start_buffer_minutes": "0",
     "home_start_buffer_minutes": "0",
+    "autostart_enabled": "1",
+    "automatic_work_start_enabled": "1",
+    "automatic_work_end_enabled": "1",
+    "automatic_recovery_enabled": "1",
+    "auto_resume_after_break_enabled": "1",
+    "auto_resume_after_absence_enabled": "1",
     "initial_setup_required": "0",
     "darkmode": "0",
 }

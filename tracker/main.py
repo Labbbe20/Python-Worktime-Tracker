@@ -61,15 +61,22 @@ def main() -> None:
     heartbeat = TrackerHeartbeat(recorder, logger=logging.getLogger("worktime.tracker.heartbeat"))
     heartbeat.start()
 
-    shortcut = autostart_windows.ensure_startup_shortcut(_startup_launcher_path())
-    if shortcut:
-        logger.info("Windows-Autostart-Verknuepfung vorhanden: %s", shortcut)
-
-    shutdown_listener = shutdown_windows.ShutdownListener(
-        lambda: _shutdown_end_day(recorder, notifier),
-        logger=logging.getLogger("worktime.tracker.shutdown"),
+    shortcut = autostart_windows.configure_startup_shortcut(
+        recorder.is_setting_enabled("autostart_enabled"),
+        _startup_launcher_path(),
     )
-    shutdown_listener.start()
+    if shortcut:
+        logger.info("Windows-Autostart-Verknuepfung aktualisiert: %s", shortcut)
+
+    shutdown_listener = None
+    if recorder.is_setting_enabled("automatic_work_end_enabled"):
+        shutdown_listener = shutdown_windows.ShutdownListener(
+            lambda: _shutdown_end_day(recorder, notifier),
+            logger=logging.getLogger("worktime.tracker.shutdown"),
+        )
+        shutdown_listener.start()
+    else:
+        logger.info("Automatischer Feierabend beim Herunterfahren ist deaktiviert")
 
     try:
         run_tray(recorder, notifier, logger=logging.getLogger("worktime.tracker.tray"))

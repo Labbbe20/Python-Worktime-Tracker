@@ -17,6 +17,7 @@ from common.balance import (
     format_minutes_as_decimal_hours,
     parse_decimal_hours_to_minutes,
 )
+from common.config import PROJECT_ROOT
 from common.models import current_time_str, normalize_time_input, parse_date, today_str
 
 
@@ -242,8 +243,11 @@ class WorktimeApi:
             return _settings_for_ui(database.get_settings(conn))
 
     def save_settings(self, values: dict[str, Any]) -> dict[str, Any]:
+        autostart_enabled: bool | None = None
         with self._locked_conn() as conn:
             normalized = _normalize_settings_input(values)
+            if "autostart_enabled" in normalized:
+                autostart_enabled = normalized["autostart_enabled"] == "1"
             database.set_settings(conn, normalized)
             year = Date.today().year
             if "vacation_days_per_year" in normalized or "vacation_carry_over" in normalized:
@@ -255,7 +259,10 @@ class WorktimeApi:
                 )
             start, end = _known_recalculation_range(conn, database.get_settings(conn))
             calculations.recalculate_range(conn, start, end)
-            return {"ok": True, "settings": _settings_for_ui(database.get_settings(conn))}
+            result = {"ok": True, "settings": _settings_for_ui(database.get_settings(conn))}
+        if autostart_enabled is not None:
+            _apply_autostart_setting(autostart_enabled)
+        return result
 
     def reset_application(self, payload: dict[str, Any]) -> dict[str, Any]:
         mode = str(payload.get("mode", "")).strip()
@@ -457,7 +464,27 @@ def _normalize_settings_input(values: dict[str, Any]) -> dict[str, str]:
         normalized["initial_flextime_minutes"] = str(minutes)
     if "initial_setup_required" in normalized:
         normalized["initial_setup_required"] = "1" if normalized["initial_setup_required"] in {"1", "true", "True", "ja"} else "0"
+    for key in (
+        "autostart_enabled",
+        "automatic_work_start_enabled",
+        "automatic_work_end_enabled",
+        "automatic_recovery_enabled",
+        "auto_resume_after_break_enabled",
+        "auto_resume_after_absence_enabled",
+    ):
+        if key in normalized:
+            normalized[key] = _normalize_bool_setting(normalized[key])
     return normalized
+
+
+def _apply_autostart_setting(enabled: bool) -> None:
+    from tracker import autostart_windows
+
+    autostart_windows.configure_startup_shortcut(enabled, PROJECT_ROOT / "main.pyw")
+
+
+def _normalize_bool_setting(value: str) -> str:
+    return "1" if str(value).strip().lower() in {"1", "true", "ja", "yes", "on"} else "0"
 
 
 def _normalize_workday_weekdays(raw_value: str) -> list[int]:

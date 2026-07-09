@@ -782,7 +782,7 @@ async function renderSettings() {
   const active = state.settingsDetailKey ? sections.find(section => section.key === state.settingsDetailKey) : null;
   content.innerHTML = `
     <div class="page-head">
-      <div><h1>Einstellungen</h1><p>Arbeitsmodell, Urlaub und Abwesenheiten, Standortcheck, Backup und Export.</p></div>
+      <div><h1>Einstellungen</h1><p>Arbeitsmodell, Automatisierung, Urlaub und Abwesenheiten, Standortcheck, Backup und Export.</p></div>
     </div>
     <section class="settings-card-grid">
       ${sections.map(section => settingsSectionCard(section)).join("")}
@@ -833,6 +833,12 @@ function settingsSections(settings) {
       summary: "Gleitzeit, Urlaub und Nachträge",
       body: renderSetupSettings(settings),
       setup: false,
+    },
+    {
+      key: "automation",
+      title: "Automatisierung",
+      summary: "Autostart und automatische Trackingfunktionen",
+      body: renderAutomationSettings(settings),
     },
     {
       key: "location",
@@ -948,6 +954,59 @@ function renderLocationSettings(settings) {
     <label>Startpuffer Homeoffice (Minuten)
       <input name="home_start_buffer_minutes" type="number" min="0" step="1" value="${escapeHtml(settings.home_start_buffer_minutes || "0")}">
       <small class="help-text">Für den Start im privaten WLAN vor VPN-Verbindung.</small>
+    </label>
+  `;
+}
+
+function renderAutomationSettings(settings) {
+  return `
+    ${settingToggle(
+      "autostart_enabled",
+      "Beim Hochfahren automatisch starten",
+      settings.autostart_enabled,
+      "Legt unter Windows eine Verknüpfung im Autostart-Ordner an oder entfernt sie."
+    )}
+    ${settingToggle(
+      "automatic_work_start_enabled",
+      "Arbeitsbeginn automatisch erfassen",
+      settings.automatic_work_start_enabled,
+      "Startet beim Tracker-Start automatisch ein Arbeitssegment. Bei Aus musst du Arbeitsbeginn im Tray-Menü manuell starten."
+    )}
+    ${settingToggle(
+      "automatic_work_end_enabled",
+      "Arbeitsende automatisch beim Herunterfahren erfassen",
+      settings.automatic_work_end_enabled,
+      "Schließt offene Segmente, wenn Windows ein echtes Herunterfahren oder Neustarten meldet."
+    )}
+    ${settingToggle(
+      "automatic_recovery_enabled",
+      "Offene Vortagssegmente automatisch schließen",
+      settings.automatic_recovery_enabled,
+      "Nutzt beim nächsten Start den letzten Tracker-Zeitstempel, falls Windows kein Shutdown-Ereignis geliefert hat."
+    )}
+    ${settingToggle(
+      "auto_resume_after_break_enabled",
+      "Nach Pause automatisch weiterarbeiten",
+      settings.auto_resume_after_break_enabled,
+      "Startet nach „Pause beenden“ automatisch wieder ein Arbeitssegment."
+    )}
+    ${settingToggle(
+      "auto_resume_after_absence_enabled",
+      "Nach Abwesenheit automatisch weiterarbeiten",
+      settings.auto_resume_after_absence_enabled,
+      "Startet nach „Abwesenheit beenden“ automatisch wieder ein Arbeitssegment."
+    )}
+  `;
+}
+
+function settingToggle(name, label, value, helpText) {
+  return `
+    <label>${escapeHtml(label)}
+      <select name="${escapeHtml(name)}">
+        <option value="1" ${value !== "0" ? "selected" : ""}>Ja</option>
+        <option value="0" ${value === "0" ? "selected" : ""}>Nein</option>
+      </select>
+      <small class="help-text">${escapeHtml(helpText)}</small>
     </label>
   `;
 }

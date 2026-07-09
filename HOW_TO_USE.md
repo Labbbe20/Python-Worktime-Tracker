@@ -144,12 +144,26 @@ In der App unter `Einstellungen` sind die Optionen in aufklappbare Kacheln grupp
 - Startdatum der Zeiterfassung, z. B. `2026-07-01`
 - Anfangssaldo Gleitzeit in Stunden, z. B. `12,5`, `50.89` oder `-3,75`
 - manuelle Büro-/Homeoffice-Tage für Zeiten vor dem Tracking
+- Automatisierung: Autostart, automatischer Arbeitsbeginn, automatischer Feierabend, automatische Wiederherstellung und automatisches Fortsetzen nach Pause/Abwesenheit
 - Standort-Ziele, z. B. `intranet.firma.local`, `intranet.firma.local:443` oder `https://intranet.firma.local`
 - Timeout in Millisekunden
 - Startpuffer je Standort: Büro und Homeoffice können beim automatischen Arbeitsbeginn um eine feste Minutenanzahl vorverlegt werden
 - Darkmode
 
 `Zurücksetzen` öffnet einen Dialog mit drei Optionen: nur Einstellungen zurücksetzen, nur Trackingdaten löschen oder alles zurücksetzen. Beim vollständigen Reset wird danach einmalig die Ersteinrichtung mit Startwerten für Urlaub, Gleitzeit und Officequote geöffnet.
+
+### Automatisierung
+
+In `Einstellungen` → `Automatisierung` kannst du festlegen, was der Tracker selbst erledigen soll:
+
+- `Beim Hochfahren automatisch starten`: erstellt oder entfernt die Windows-Autostart-Verknüpfung.
+- `Arbeitsbeginn automatisch erfassen`: startet beim Tracker-Start automatisch ein Arbeitssegment.
+- `Arbeitsende automatisch beim Herunterfahren erfassen`: schließt offene Segmente bei Windows-Shutdown/Neustart.
+- `Offene Vortagssegmente automatisch schließen`: nutzt beim nächsten Start den letzten Tracker-Zeitstempel, falls Windows kein Shutdown-Ereignis geliefert hat.
+- `Nach Pause automatisch weiterarbeiten`: startet nach `Pause beenden` automatisch wieder Arbeit.
+- `Nach Abwesenheit automatisch weiterarbeiten`: startet nach `Abwesenheit beenden` automatisch wieder Arbeit.
+
+Wenn du lieber komplett manuell tracken möchtest, schaltest du insbesondere `Arbeitsbeginn automatisch erfassen`, `Arbeitsende automatisch beim Herunterfahren erfassen` und die beiden `automatisch weiterarbeiten`-Optionen aus.
 
 ### Startdatum und Anfangssaldo
 

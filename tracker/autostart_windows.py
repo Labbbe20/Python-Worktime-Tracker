@@ -57,6 +57,27 @@ def ensure_startup_shortcut(script_path: str | Path | None = None, name: str = "
     return shortcut_path
 
 
+def remove_startup_shortcut(name: str = "ArbeitszeitTracker.lnk") -> Path | None:
+    """Remove the per-user Startup-folder shortcut on Windows if it exists."""
+
+    if not is_windows():
+        return None
+    shortcut_path = get_startup_folder() / name
+    try:
+        shortcut_path.unlink()
+    except FileNotFoundError:
+        return None
+    return shortcut_path
+
+
+def configure_startup_shortcut(
+    enabled: bool,
+    script_path: str | Path | None = None,
+    name: str = "ArbeitszeitTracker.lnk",
+) -> Path | None:
+    return ensure_startup_shortcut(script_path, name) if enabled else remove_startup_shortcut(name)
+
+
 def _preferred_windowed_script(script_path: Path) -> Path:
     pyw_path = script_path.with_suffix(".pyw")
     return pyw_path if pyw_path.exists() else script_path

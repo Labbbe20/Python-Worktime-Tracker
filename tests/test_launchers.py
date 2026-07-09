@@ -12,6 +12,20 @@ def test_autostart_prefers_pyw_launcher():
     assert autostart_windows._preferred_windowed_script(script).name == "main.pyw"
 
 
+def test_autostart_remove_shortcut(tmp_path, monkeypatch):
+    startup = tmp_path / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup"
+    startup.mkdir(parents=True)
+    shortcut = startup / "ArbeitszeitTracker.lnk"
+    shortcut.write_text("shortcut", encoding="utf-8")
+    monkeypatch.setattr(autostart_windows.sys, "platform", "win32")
+    monkeypatch.setenv("APPDATA", str(tmp_path))
+
+    removed = autostart_windows.configure_startup_shortcut(False)
+
+    assert removed == shortcut
+    assert not shortcut.exists()
+
+
 def test_tracker_startup_prefers_root_launcher():
     from tracker.main import _startup_launcher_path
 
