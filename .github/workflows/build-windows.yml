@@ -49,12 +49,27 @@ jobs:
           path: dist/ArbeitszeitTracker.exe
           if-no-files-found: error
 
+      - name: Resolve release tag
+        id: release
+        if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: |
+          $tag = "${{ github.event.inputs.release_tag }}"
+          if ([string]::IsNullOrWhiteSpace($tag)) {
+            if ("${{ startsWith(github.ref, 'refs/tags/v') }}" -eq "true") {
+              $tag = "${{ github.ref_name }}"
+            } else {
+              $tag = "v0.0.${{ github.run_number }}"
+            }
+          }
+          "tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
       - name: Publish GitHub Release
-        if: startsWith(github.ref, 'refs/tags/v') || github.event.inputs.release_tag != ''
+        if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.event.inputs.release_tag || github.ref_name }}
-          name: ArbeitszeitTracker ${{ github.event.inputs.release_tag || github.ref_name }}
+          tag_name: ${{ steps.release.outputs.tag }}
+          name: ArbeitszeitTracker ${{ steps.release.outputs.tag }}
           body: |
             Fertige Windows-Version.
 
@@ -63,3 +78,5 @@ jobs:
             - starten
             - keine Python-Installation nötig
           files: dist/ArbeitszeitTracker.exe
+          overwrite_files: true
+          make_latest: true

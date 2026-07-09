@@ -25,7 +25,7 @@ Wenn der Code auf GitHub liegt, muss die Exe nicht auf dem Windows-PC gebaut wer
 2. `Actions` öffnen.
 3. Workflow `Build Windows EXE` auswählen.
 4. `Run workflow` klicken.
-5. Bei `release_tag` eine neue Version eintragen, z. B. `v1.0.0`, `v1.0.1` oder `v2026.07.09`.
+5. Optional bei `release_tag` eine neue Version eintragen, z. B. `v1.0.0`, `v1.0.1` oder `v2026.07.09`. Wenn das Feld leer bleibt, erzeugt GitHub automatisch eine Versionsnummer wie `v0.0.12`.
 6. Den Workflow starten und warten, bis er grün ist.
 7. Im Repository rechts oder oben zu `Releases` gehen.
 8. Die neueste Release öffnen.
