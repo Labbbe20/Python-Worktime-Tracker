@@ -4,14 +4,16 @@ from __future__ import annotations
 
 import logging
 import sys
+import threading
 from pathlib import Path
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
+SOURCE_ROOT = Path(__file__).resolve().parents[1]
+if str(SOURCE_ROOT) not in sys.path:
+    sys.path.insert(0, str(SOURCE_ROOT))
 
 from common import database
+from common.config import PROJECT_ROOT
 from common.html_logger import HtmlLogHandler
 from tracker import autostart_windows, shutdown_windows
 from tracker.notify import NotificationCenter
@@ -56,7 +58,10 @@ def main() -> None:
     if start_event:
         notifier.show("ArbeitszeitTracker", f"{start_event.message} - {start_event.time[:5]} Uhr")
 
-    shortcut = autostart_windows.ensure_startup_shortcut(Path(__file__).resolve())
+    heartbeat = TrackerHeartbeat(recorder, logger=logging.getLogger("worktime.tracker.heartbeat"))
+    heartbeat.start()
+
+    shortcut = autostart_windows.ensure_startup_shortcut(_startup_launcher_path())
     if shortcut:
         logger.info("Windows-Autostart-Verknuepfung vorhanden: %s", shortcut)
 
@@ -69,7 +74,44 @@ def main() -> None:
     try:
         run_tray(recorder, notifier, logger=logging.getLogger("worktime.tracker.tray"))
     finally:
+        heartbeat.stop()
         notifier.stop()
+
+
+class TrackerHeartbeat:
+    def __init__(
+        self,
+        recorder: WorktimeRecorder,
+        interval_seconds: int = 30,
+        logger: logging.Logger | None = None,
+    ) -> None:
+        self.recorder = recorder
+        self.interval_seconds = interval_seconds
+        self.logger = logger or logging.getLogger("worktime.tracker.heartbeat")
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def start(self) -> None:
+        if self._thread and self._thread.is_alive():
+            return
+        self._write_once()
+        self._thread = threading.Thread(target=self._run, name="TrackerHeartbeat", daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self._thread and self._thread.is_alive():
+            self._thread.join(timeout=2)
+
+    def _run(self) -> None:
+        while not self._stop.wait(self.interval_seconds):
+            self._write_once()
+
+    def _write_once(self) -> None:
+        try:
+            self.recorder.record_heartbeat()
+        except Exception:
+            self.logger.debug("Tracker-Heartbeat konnte nicht gespeichert werden", exc_info=True)
 
 
 def _ask_recovery_end_time(segment: dict) -> str | None:
@@ -97,6 +139,11 @@ def _shutdown_end_day(recorder: WorktimeRecorder, notifier: NotificationCenter) 
     event = recorder.end_day(source="AUTO_SHUTDOWN", reason="Feierabend automatisch beim Herunterfahren")
     if event:
         notifier.show("ArbeitszeitTracker", f"{event.message} - {event.time[:5]} Uhr")
+
+
+def _startup_launcher_path() -> Path:
+    root_launcher = PROJECT_ROOT / "main.pyw"
+    return root_launcher if root_launcher.exists() else Path(__file__).resolve()
 
 
 if __name__ == "__main__":

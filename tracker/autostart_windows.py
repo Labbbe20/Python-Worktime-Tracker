@@ -49,7 +49,9 @@ def ensure_startup_shortcut(script_path: str | Path | None = None, name: str = "
         shortcut.Arguments = f'"{target_script}"'
         shortcut.WorkingDirectory = str(target_script.resolve().parents[1])
     shortcut.Description = "ArbeitszeitTracker Hintergrundprogramm"
-    if APP_ICON_PATH.exists():
+    if getattr(sys, "frozen", False):
+        shortcut.IconLocation = str(sys.executable)
+    elif APP_ICON_PATH.exists():
         shortcut.IconLocation = str(APP_ICON_PATH)
     shortcut.save()
     return shortcut_path

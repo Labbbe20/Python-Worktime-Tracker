@@ -6,11 +6,15 @@ import json
 import logging
 import threading
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
 from common import calculations, database, location
 from common.models import current_time_str, normalize_time_input, today_str
+
+
+HEARTBEAT_SETTING = "last_tracker_heartbeat"
 
 
 @dataclass(frozen=True)
@@ -113,6 +117,21 @@ class WorktimeRecorder:
         with self._lock, self._connect() as conn:
             open_segments = [row for row in database.get_open_segments(conn) if row["date"] < today]
             for row in open_segments:
+                automatic_end_time = self._heartbeat_recovery_end_time(conn, row)
+                if automatic_end_time:
+                    database.close_segment(conn, row["id"], automatic_end_time)
+                    calculations.recalculate_day(conn, row["date"])
+                    event = RecorderEvent(
+                        "AUTO_RECOVERY",
+                        "Feierabend automatisch aus letztem Tracker-Signal nachgetragen",
+                        automatic_end_time,
+                        row["date"],
+                        segment_id=row["id"],
+                    )
+                    recovered.append(event)
+                    self.logger.info("Automatische Recovery fuer %s um %s", row["date"], automatic_end_time)
+                    continue
+
                 end_time = ask_end_time(dict(row))
                 if not end_time:
                     self.logger.warning("Offenes Segment %s bleibt unveraendert", row["id"])
@@ -130,6 +149,26 @@ class WorktimeRecorder:
                 recovered.append(event)
                 self.logger.info("Crash-Recovery fuer %s um %s", row["date"], normalized)
         return recovered
+
+    def record_heartbeat(self, at: datetime | None = None) -> None:
+        stamp = (at or datetime.now()).replace(microsecond=0).isoformat()
+        with self._lock, self._connect() as conn:
+            database.set_setting(conn, HEARTBEAT_SETTING, stamp)
+
+    def _heartbeat_recovery_end_time(self, conn, segment) -> str | None:
+        raw = database.get_setting(conn, HEARTBEAT_SETTING, "")
+        if not raw:
+            return None
+        try:
+            stamp = datetime.fromisoformat(raw)
+        except (TypeError, ValueError):
+            return None
+        if stamp.date().isoformat() != segment["date"]:
+            return None
+        end_time = stamp.strftime("%H:%M:%S")
+        if end_time <= str(segment["start_time"]):
+            return None
+        return end_time
 
     def consume_shutdown_notice(self) -> str | None:
         with self._lock, self._connect() as conn:

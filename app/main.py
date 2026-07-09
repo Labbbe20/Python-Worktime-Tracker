@@ -7,9 +7,9 @@ import sys
 from pathlib import Path
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
+SOURCE_ROOT = Path(__file__).resolve().parents[1]
+if str(SOURCE_ROOT) not in sys.path:
+    sys.path.insert(0, str(SOURCE_ROOT))
 
 from app.api import WorktimeApi
 from app.instance import (
@@ -20,6 +20,7 @@ from app.instance import (
     request_app_view,
 )
 from common import database
+from common.config import PROJECT_ROOT
 from common.html_logger import HtmlLogHandler
 
 
@@ -39,6 +40,7 @@ def configure_logging() -> None:
 def main() -> None:
     configure_logging()
     database.init_db()
+    _set_windows_app_id()
     initial_view = _initial_view_from_args()
     if another_instance_is_running():
         request_app_view(initial_view)
@@ -61,6 +63,7 @@ def main() -> None:
         width=1180,
         height=820,
         min_size=(920, 640),
+        background_color="#f8fafc",
     )
     api.attach_window(window)
     logging.getLogger("worktime.app").info("App-Fenster gestartet: %s", window.title)
@@ -84,6 +87,17 @@ def _app_icon_path() -> str | None:
         if path.exists():
             return str(path)
     return None
+
+
+def _set_windows_app_id() -> None:
+    if not sys.platform.startswith("win"):
+        return
+    try:
+        import ctypes
+
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("ArbeitszeitTracker.Local")
+    except Exception:
+        logging.getLogger("worktime.app").debug("Windows AppUserModelID konnte nicht gesetzt werden", exc_info=True)
 
 
 if __name__ == "__main__":

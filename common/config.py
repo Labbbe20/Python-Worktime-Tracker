@@ -3,11 +3,25 @@
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-DATA_DIR = PROJECT_ROOT / "data"
+def _resource_root() -> Path:
+    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+        return Path(sys._MEIPASS).resolve()  # type: ignore[attr-defined]
+    return Path(__file__).resolve().parents[1]
+
+
+def _runtime_root() -> Path:
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return PROJECT_ROOT
+
+
+PROJECT_ROOT = _resource_root()
+RUNTIME_ROOT = _runtime_root()
+DATA_DIR = Path(os.environ.get("WORKTIME_DATA_DIR", RUNTIME_ROOT / "data")).expanduser().resolve()
 BACKUP_DIR = DATA_DIR / "backups"
 LOG_DIR = DATA_DIR / "logs"
 DEFAULT_DB_PATH = DATA_DIR / "database.db"

@@ -15,6 +15,7 @@ const content = document.getElementById("content");
 const toast = document.getElementById("toast");
 let commandPollTimer = null;
 let autoRefreshTimer = null;
+let chartLibraryPromise = null;
 
 document.querySelectorAll(".nav button").forEach(button => {
   button.addEventListener("click", () => setView(button.dataset.view));
@@ -22,19 +23,22 @@ document.querySelectorAll(".nav button").forEach(button => {
 
 document.getElementById("refresh-view")?.addEventListener("click", () => render());
 
-window.addEventListener("pywebviewready", () => {
+window.addEventListener("pywebviewready", async () => {
   syncNav();
-  loadInitialTheme().finally(async () => {
+  const settings = await loadInitialTheme();
+  try {
     await render();
     startCommandPolling();
     startAutoRefresh();
-    await checkInitialSetup();
-  });
+    await checkInitialSetup(settings);
+  } catch (error) {
+    showError(error);
+  }
 });
 
 setTimeout(() => {
   if (!window.pywebview) {
-    content.innerHTML = `<section class="panel"><h1>pywebview nicht verbunden</h1><p class="muted">Starte die App mit <code>python3 app/main.py</code>, damit die lokale Python-API verfügbar ist.</p></section>`;
+    content.innerHTML = `<section class="panel"><h1>pywebview nicht verbunden</h1><p class="muted">Starte die App mit <code>python3 main.py --app</code>, damit die lokale Python-API verfügbar ist.</p></section>`;
   }
 }, 1200);
 
@@ -42,14 +46,16 @@ async function loadInitialTheme() {
   try {
     const settings = await api("settings");
     document.body.classList.toggle("dark", settings.darkmode === "1");
+    return settings;
   } catch (error) {
     console.warn(error);
+    return null;
   }
 }
 
-async function checkInitialSetup() {
+async function checkInitialSetup(settings = null) {
   try {
-    const settings = await api("settings");
+    settings = settings || await api("settings");
     if (settings.initial_setup_required !== "1") return;
     state.view = "settings";
     state.settingsDetailKey = "setup";
@@ -644,7 +650,21 @@ async function loadStatistics() {
       </table>
     </div>
   `;
+  await loadChartLibrary();
   drawStatsChart(data.months);
+}
+
+function loadChartLibrary() {
+  if (window.Chart) return Promise.resolve();
+  if (chartLibraryPromise) return chartLibraryPromise;
+  chartLibraryPromise = new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    script.src = "../static/vendor/chart.umd.js";
+    script.onload = resolve;
+    script.onerror = () => reject(new Error("Chart-Bibliothek konnte nicht geladen werden."));
+    document.head.appendChild(script);
+  });
+  return chartLibraryPromise;
 }
 
 function drawStatsChart(months) {
@@ -916,9 +936,9 @@ function renderSetupSettings(settings) {
 
 function renderLocationSettings(settings) {
   return `
-    <label>Standort-Ziele host:port
-      <input name="homeoffice_check_targets" type="text" value="${escapeHtml(settings.homeoffice_check_targets)}" placeholder="intranet.local:443,10.0.0.10:445">
-      <small class="help-text">Erreichbar bedeutet Büro, nicht erreichbar bedeutet Homeoffice.</small>
+    <label>Standort-Ziele
+      <input name="homeoffice_check_targets" type="text" value="${escapeHtml(settings.homeoffice_check_targets)}" placeholder="server-firma, intranet.local:443, https://intranet.local">
+      <small class="help-text">Servername ohne Port wird per Ping geprüft. host:port oder https://... wird per TCP geprüft. Erreichbar bedeutet Büro, nicht erreichbar bedeutet Homeoffice.</small>
     </label>
     <label>Timeout Standortcheck (ms) <input name="homeoffice_check_timeout_ms" type="number" min="50" value="${escapeHtml(settings.homeoffice_check_timeout_ms)}"></label>
     <label>Startpuffer Büro (Minuten)

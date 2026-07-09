@@ -54,11 +54,7 @@ def run_tray(recorder: WorktimeRecorder, notifier: NotificationCenter, logger: l
         if another_instance_is_running():
             request_app_view(view)
             return
-        script = _app_script_path()
-        command = [_windowed_python_executable(), str(script)]
-        if view:
-            command.extend(["--view", view])
-        subprocess.Popen(command, cwd=str(PROJECT_ROOT))
+        subprocess.Popen(_app_launch_command(view), cwd=str(_launch_cwd()))
 
     def action_open_app(icon, item) -> None:
         launch_app()
@@ -109,7 +105,7 @@ def run_tray(recorder: WorktimeRecorder, notifier: NotificationCenter, logger: l
         pystray.Menu.SEPARATOR,
         pystray.MenuItem("❌ Beenden", quit_app),
     )
-    icon = pystray.Icon("ArbeitszeitTracker", _create_icon(Image, ImageDraw), "ArbeitszeitTracker", menu)
+    icon = pystray.Icon("ArbeitszeitTracker", _load_icon(Image, ImageDraw), "ArbeitszeitTracker", menu)
     notifier.attach_tray_icon(icon)
     icon.run()
 
@@ -124,7 +120,40 @@ def _create_icon(image_module, draw_module):
     return image
 
 
+def _load_icon(image_module, draw_module):
+    icon_path = PROJECT_ROOT / "app" / "static" / "icons" / "app.png"
+    if icon_path.exists():
+        try:
+            with image_module.open(icon_path) as image:
+                return image.convert("RGBA")
+        except Exception:
+            pass
+    return _create_icon(image_module, draw_module)
+
+
+def _app_launch_command(view: str | None = None) -> list[str]:
+    if getattr(sys, "frozen", False):
+        command = [sys.executable, "--app"]
+    else:
+        script = _app_script_path()
+        command = [_windowed_python_executable(), str(script)]
+        if script.name == "main.pyw" and script.parent == PROJECT_ROOT:
+            command.append("--app")
+    if view:
+        command.extend(["--view", view])
+    return command
+
+
+def _launch_cwd() -> Path:
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return PROJECT_ROOT
+
+
 def _app_script_path() -> Path:
+    root_launcher = PROJECT_ROOT / "main.pyw"
+    if root_launcher.exists():
+        return root_launcher
     script = PROJECT_ROOT / "app" / "main.py"
     if sys.platform.startswith("win"):
         pyw_script = script.with_suffix(".pyw")
