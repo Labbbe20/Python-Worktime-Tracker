@@ -39,7 +39,7 @@ def configure_logging() -> None:
 
 def main() -> None:
     configure_logging()
-    database.init_db()
+    db_path = database.init_db()
     _set_windows_app_id()
     initial_view = _initial_view_from_args()
     if another_instance_is_running():
@@ -55,14 +55,14 @@ def main() -> None:
 
     html_path = PROJECT_ROOT / "app" / "templates" / "index.html"
     url = f"{html_path.resolve().as_uri()}#{initial_view}"
-    api = WorktimeApi()
+    api = WorktimeApi(db_path)
     window = webview.create_window(
         "ArbeitszeitTracker",
         url,
         js_api=api,
-        width=1180,
-        height=820,
-        min_size=(920, 640),
+        width=1440,
+        height=860,
+        min_size=(1080, 680),
         background_color="#f8fafc",
     )
     api.attach_window(window)

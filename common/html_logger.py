@@ -53,16 +53,6 @@ class HtmlLogHandler(logging.Handler):
         return self.log_dir / f"log_{datetime.now().strftime('%Y-%m')}.html"
 
 
-def setup_html_logging(name: str = "worktime", log_dir: str | Path | None = None) -> logging.Logger:
-    logger = logging.getLogger(name)
-    logger.setLevel(logging.INFO)
-    if not any(isinstance(handler, HtmlLogHandler) for handler in logger.handlers):
-        handler = HtmlLogHandler(log_dir=log_dir)
-        handler.setFormatter(logging.Formatter("%(message)s"))
-        logger.addHandler(handler)
-    return logger
-
-
 def read_entries(path: str | Path) -> list[dict[str, Any]]:
     file_path = Path(path)
     if not file_path.exists():
@@ -277,4 +267,3 @@ render();
 </body>
 </html>
 """
-

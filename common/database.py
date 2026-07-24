@@ -12,7 +12,7 @@ import sqlite3
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Iterator, Sequence
+from typing import Any, Iterator
 
 from .config import BACKUP_DIR, DEFAULT_SETTINGS, ensure_data_dirs, get_database_path
 from .models import DAY_TYPES, LOCATIONS, SEGMENT_TYPES, SOURCES, now_iso
@@ -453,16 +453,6 @@ def get_month_closing(conn: sqlite3.Connection, year_month: str) -> sqlite3.Row 
     return conn.execute("SELECT * FROM month_closing WHERE year_month = ?", (year_month,)).fetchone()
 
 
-def set_month_closed(conn: sqlite3.Connection, year_month: str, closed: bool) -> None:
-    if not get_month_closing(conn, year_month):
-        upsert_month_closing(conn, year_month, 0, 0, 0, 0, 0.0, 0.0, 0, int(closed))
-        return
-    conn.execute(
-        "UPDATE month_closing SET closed = ?, closed_at = ? WHERE year_month = ?",
-        (int(closed), now_iso() if closed else None, year_month),
-    )
-
-
 def ensure_vacation_account(conn: sqlite3.Connection, year: int) -> None:
     settings = get_settings(conn) if _table_exists(conn, "settings") else DEFAULT_SETTINGS
     entitlement = float(settings.get("vacation_days_per_year", DEFAULT_SETTINGS["vacation_days_per_year"]) or 0)
@@ -508,10 +498,6 @@ def create_manual_backup(conn: sqlite3.Connection, db_path: str | Path | None = 
     destination = BACKUP_DIR / f"database_backup_{timestamp}.db"
     shutil.copy2(path, destination)
     return destination
-
-
-def rows_to_dicts(rows: Sequence[sqlite3.Row]) -> list[dict[str, Any]]:
-    return [dict(row) for row in rows]
 
 
 def _replace_settings(conn: sqlite3.Connection, values: dict[str, str]) -> None:

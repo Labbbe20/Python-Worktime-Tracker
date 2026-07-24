@@ -15,7 +15,7 @@ if str(SOURCE_ROOT) not in sys.path:
 from common import database
 from common.config import PROJECT_ROOT
 from common.html_logger import HtmlLogHandler
-from tracker import autostart_windows, shutdown_windows
+from tracker import autostart_windows, popups, shutdown_windows
 from tracker.notify import NotificationCenter
 from tracker.recorder import WorktimeRecorder
 from tracker.tray import run_tray
@@ -51,15 +51,16 @@ def main() -> None:
     if shutdown_notice:
         notifier.show("ArbeitszeitTracker", shutdown_notice)
 
-    for event in recorder.recover_previous_open_segments(_ask_recovery_end_time):
-        notifier.show("ArbeitszeitTracker", f"{event.message}: {event.date} {event.time[:5]} Uhr")
-
-    start_event = recorder.auto_start_day()
-    if start_event:
-        notifier.show("ArbeitszeitTracker", f"{start_event.message} - {start_event.time[:5]} Uhr")
+    popups.handle_startup_popups(recorder, notifier)
 
     heartbeat = TrackerHeartbeat(recorder, logger=logging.getLogger("worktime.tracker.heartbeat"))
     heartbeat.start()
+    popup_scheduler = popups.PopupScheduler(
+        recorder,
+        notifier,
+        logger=logging.getLogger("worktime.tracker.popups"),
+    )
+    popup_scheduler.start()
 
     shortcut = autostart_windows.configure_startup_shortcut(
         recorder.is_setting_enabled("autostart_enabled"),
@@ -81,6 +82,7 @@ def main() -> None:
     try:
         run_tray(recorder, notifier, logger=logging.getLogger("worktime.tracker.tray"))
     finally:
+        popup_scheduler.stop()
         heartbeat.stop()
         notifier.stop()
 
@@ -119,27 +121,6 @@ class TrackerHeartbeat:
             self.recorder.record_heartbeat()
         except Exception:
             self.logger.debug("Tracker-Heartbeat konnte nicht gespeichert werden", exc_info=True)
-
-
-def _ask_recovery_end_time(segment: dict) -> str | None:
-    try:
-        import tkinter as tk
-        from tkinter import simpledialog
-    except Exception:
-        logging.getLogger("worktime.tracker").warning("Crash-Recovery-Dialog nicht verfuegbar")
-        return None
-
-    root = tk.Tk()
-    root.withdraw()
-    try:
-        message = (
-            f"Offenes Segment vom {segment['date']} seit {segment['start_time'][:5]} Uhr gefunden.\n"
-            "Wann soll Feierabend nachgetragen werden? (HH:MM)"
-        )
-        value = simpledialog.askstring("Crash-Recovery", message, initialvalue="17:00", parent=root)
-        return value
-    finally:
-        root.destroy()
 
 
 def _shutdown_end_day(recorder: WorktimeRecorder, notifier: NotificationCenter) -> None:

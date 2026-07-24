@@ -1,0 +1,355 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ArbeitszeitTracker Import-Protokoll</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #f8fafc;
+      --surface: #ffffff;
+      --text: #0f172a;
+      --muted: #475569;
+      --border: #d8e0ea;
+      --info: #2563eb;
+      --success: #15803d;
+      --success-bg: #dcfce7;
+      --warning: #b45309;
+      --warning-bg: #fef3c7;
+      --error: #b91c1c;
+      --error-bg: #fee2e2;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #111827;
+        --surface: #182033;
+        --text: #f8fafc;
+        --muted: #cbd5e1;
+        --border: #334155;
+        --success-bg: #123524;
+        --warning-bg: #3d2c10;
+        --error-bg: #3b1515;
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.5;
+    }
+    header {
+      display: grid;
+      gap: 16px;
+      padding: 24px;
+      border-bottom: 1px solid var(--border);
+      background: var(--surface);
+    }
+    h1 { margin: 0; font-size: 24px; }
+    .meta, .toolbar, .cards { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
+    .meta { color: var(--muted); }
+    .card {
+      min-width: 120px;
+      padding: 10px 12px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: color-mix(in srgb, var(--surface), var(--bg) 35%);
+    }
+    .card strong { display: block; font-size: 20px; }
+    input, select, button {
+      min-height: 40px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 0 12px;
+      background: var(--bg);
+      color: var(--text);
+      font: inherit;
+    }
+    button {
+      cursor: pointer;
+      background: var(--surface);
+      white-space: nowrap;
+      transition: transform 160ms ease, border-color 160ms ease, background 160ms ease;
+    }
+    button:hover { transform: translateY(-1px); border-color: var(--info); }
+    input { min-width: min(420px, 100%); }
+    main { padding: 24px; overflow-x: auto; }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    th, td {
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--border);
+      text-align: left;
+      vertical-align: top;
+    }
+    th {
+      cursor: pointer;
+      user-select: none;
+      background: color-mix(in srgb, var(--surface), var(--bg) 45%);
+      white-space: nowrap;
+    }
+    tr:last-child td { border-bottom: 0; }
+    td { overflow-wrap: anywhere; }
+    .day-row.success { background: color-mix(in srgb, var(--success-bg), transparent 45%); }
+    .day-row.warning { background: color-mix(in srgb, var(--warning-bg), transparent 35%); }
+    .day-row.error { background: color-mix(in srgb, var(--error-bg), transparent 35%); }
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 96px;
+      min-height: 30px;
+      border-radius: 999px;
+      padding: 4px 10px;
+      font-size: 13px;
+      font-weight: 800;
+    }
+    .badge.success { color: var(--success); background: var(--success-bg); }
+    .badge.warning { color: var(--warning); background: var(--warning-bg); }
+    .badge.error { color: var(--error); background: var(--error-bg); }
+    .problem { margin: 4px 0 0; color: var(--warning); font-weight: 700; }
+    .detail-row.is-hidden { display: none; }
+    .detail-cell {
+      padding: 0;
+      background: color-mix(in srgb, var(--surface), var(--bg) 20%);
+    }
+    .detail-panel {
+      display: grid;
+      gap: 16px;
+      padding: 16px;
+      border-top: 1px solid var(--border);
+    }
+    .detail-head {
+      display: grid;
+      gap: 8px;
+    }
+    .detail-head h2 { margin: 0; font-size: 18px; }
+    .detail-head p { margin: 0; color: var(--muted); }
+    .compare-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+    .compare-box {
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 12px;
+      background: var(--surface);
+    }
+    .compare-box h3 { margin: 0 0 8px; font-size: 14px; }
+    pre {
+      margin: 0;
+      white-space: pre-wrap;
+      color: var(--muted);
+      font: inherit;
+    }
+    .events th { cursor: default; }
+    .event-status-ERROR td:first-child { color: var(--error); font-weight: 800; }
+    .event-status-WARNING td:first-child { color: var(--warning); font-weight: 800; }
+    .event-status-INFO td:first-child { color: var(--success); font-weight: 800; }
+    .count { color: var(--muted); font-size: 14px; }
+    @media (max-width: 780px) {
+      header, main { padding: 16px; }
+      .compare-grid { grid-template-columns: 1fr; }
+      .day-table thead { display: none; }
+      .day-row, .day-row td {
+        display: grid;
+        width: 100%;
+      }
+      .day-row {
+        grid-template-columns: 1fr;
+        border-bottom: 1px solid var(--border);
+      }
+      .day-row td { border-bottom: 0; padding: 8px 12px; }
+      .day-row td::before {
+        content: attr(data-label);
+        color: var(--muted);
+        font-size: 12px;
+        font-weight: 700;
+        text-transform: uppercase;
+      }
+      .detail-row td { display: block; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1>Import-Protokoll</h1>
+      <div class="meta"><span id="source"></span><span id="created"></span><span id="count"></span></div>
+    </div>
+    <section class="cards" id="cards"></section>
+    <div class="toolbar">
+      <label for="search">Suche</label>
+      <input id="search" type="search" placeholder="Freitext über alle Spalten">
+      <label for="status">Status</label>
+      <select id="status">
+        <option value="">Alle</option>
+        <option value="WARNING">Warnungen</option>
+        <option value="ERROR">Fehler</option>
+        <option value="INFO">Erfolgreich</option>
+      </select>
+    </div>
+  </header>
+  <main>
+    <table class="day-table" aria-describedby="count">
+      <thead>
+        <tr>
+          <th data-key="status">Status</th>
+          <th data-key="date">Datum</th>
+          <th data-key="summary">Zusammenfassung</th>
+          <th data-key="entry_count">Aktionen</th>
+          <th>Details</th>
+        </tr>
+      </thead>
+      <tbody id="rows"></tbody>
+    </table>
+  </main>
+  <script>
+const IMPORT_GROUPS = [{"id": "day-17", "date": "2026-07-07", "severity": 0, "before": "Segmente: keine | Abwesenheiten: keine | Notiz: keine | Berechnung: Soll 0:00, Ist 0:00, Pause 0:00, Saldo 0:00", "after": "Segmente: #46 Arbeit 05:00-14:00 Büro | Abwesenheiten: keine | Notiz: keine | Berechnung: Soll 0:00, Ist 0:00, Pause 0:00, Saldo 0:00", "entries": [{"status": "INFO", "date": "2026-07-07", "source": "Übersicht", "action": "Arbeitssegment aus Übersicht erzeugt", "before": "", "after": "Arbeit 05:00-14:00 Büro", "details": "Zeile 189"}, {"status": "INFO", "date": "2026-07-07", "source": "Datenbank", "action": "Tag ersetzt", "before": "Segmente: keine | Abwesenheiten: keine | Notiz: keine | Berechnung: Soll 0:00, Ist 0:00, Pause 0:00, Saldo 0:00", "after": "Segmente: #46 Arbeit 05:00-14:00 Büro | Abwesenheiten: keine | Notiz: keine | Berechnung: Soll 0:00, Ist 0:00, Pause 0:00, Saldo 0:00", "details": "Nur dieser Tag wurde überschrieben."}], "status": "INFO", "status_label": "Erfolgreich", "status_class": "success", "summary": "Arbeitssegment aus Übersicht erzeugt", "problem": "", "entry_count": 1}, {"id": "day-0", "date": "2026-07-08", "severity": 0, "before": "Segmente: #27 Arbeit 07:13-16:30 Homeoffice | Abwesenheiten: keine | Notiz: keine | Berechnung: Soll 7:48, Ist 8:32, Pause 0:45, Saldo 0:44", "after": "Segmente: #39 Arbeit 07:13-16:30 Homeoffice | Abwesenheiten: keine | Notiz: keine | Berechnung: Soll 7:48, Ist 8:32, Pause 0:45, Saldo 0:44", "entries": [{"status": "INFO", "date": "2026-07-08", "source": "Segmente", "action": "Segment übernommen", "before": "", "after": "Arbeit 07:13-16:30 Homeoffice", "details": "Zeile 207"}, {"status": "INFO", "date": "2026-07-08", "source": "Datenbank", "action": "Tag ersetzt", "before": "Segmente: #27 Arbeit 07:13-16:30 Homeoffice | Abwesenheiten: keine | Notiz: keine | Berechnung: Soll 7:48, Ist 8:32, Pause 0:45, Saldo 0:44", "after": "Segmente: #39 Arbeit 07:13-16:30 Homeoffice | Abwesenheiten: keine | Notiz: keine | Berechnung: Soll 7:48, Ist 8:32, Pause 0:45, Saldo 0:44", "details": "Nur dieser Tag wurde überschrieben."}], "status": "INFO", "status_label": "Erfolgreich", "status_class": "success", "summary": "Segment übernommen", "problem": "", "entry_count": 1}, {"id": "day-1", "date": "2026-07-09", "severity": 0, "before": "Segmente: #28 Arbeit 06:40-15:44 Homeoffice | Abwesenheiten: keine | Notiz: keine | Berechnung: Soll 7:48, Ist 8:19, Pause 0:45, Saldo 0:31", "after": "Segmente: #40 Arbeit 06:40-15:44 Homeoffice | Abwesenheiten: keine | Notiz: keine | Berechnung: Soll 7:48, Ist 8:19, Pause 0:45, Saldo 0:31", "entries": [{"status": "INFO", "date": "2026-07-09", "source": "Segmente", "action": "Segment übernommen", "before": "", "after": "Arbeit 06:40-15:44 Homeoffice", "details": "Zeile 208"}, {"status": "INFO", "date": "2026-07-09", "source": "Datenbank", "action": "Tag ersetzt", "before": "Segmente: #28 Arbeit 06:40-15:44 Homeoffice | Abwesenheiten: keine | Notiz: keine | Berechnung: Soll 7:48, Ist 8:19, Pause 0:45, Saldo 0:31", "after": "Segmente: #40 Arbeit 06:40-15:44 Homeoffice | Abwesenheiten: keine | Notiz: keine | Berechnung: Soll 7:48, Ist 8:19, Pause 0:45, Saldo 0:31", "details": "Nur dieser Tag wurde überschrieben."}], "status": "INFO", "status_label": "Erfolgreich", "status_class": "success", "summary": "Segment übernommen", "problem": "", "entry_count": 1}, {"id": "day-7", "date": "2026-07-10", "severity": 0, "before": "Segmente: keine | Abwesenheiten: #22 Gleitzeittag (Ludwigshafen) | Notiz: keine | Berechnung: Soll 7:48, Ist 0:00, Pause 0:00, Saldo -7:48", "after": "Segmente: keine | Abwesenheiten: #39 Gleitzeittag (Ludwigshafen) | Notiz: keine | Berechnung: Soll 7:48, Ist 0:00, Pause 0:00, Saldo -7:48", "entries": [{"status": "INFO", "date": "2026-07-10", "source": "Abwesenheiten", "action": "Abwesenheit übernommen", "before": "", "after": "Gleitzeittag ganztägig (Ludwigshafen)", "details": "Zeile 214"}, {"status": "INFO", "date": "2026-07-10", "source": "Datenbank", "action": "Tag ersetzt", "before": "Segmente: keine | Abwesenheiten: #22 Gleitzeittag (Ludwigshafen) | Notiz: keine | Berechnung: Soll 7:48, Ist 0:00, Pause 0:00, Saldo -7:48", "after": "Segmente: keine | Abwesenheiten: #39 Gleitzeittag (Ludwigshafen) | Notiz: keine | Berechnung: Soll 7:48, Ist 0:00, Pause 0:00, Saldo -7:48", "details": "Nur dieser Tag wurde überschrieben."}], "status": "INFO", "status_label": "Erfolgreich", "status_class": "success", "summary": "Abwesenheit übernommen", "problem": "", "entry_count": 1}, {"id": "day-8", "date": "2026-07-11", "severity": 0, "before": "Segmente: keine | Abwesenheiten: #23 Urlaub (Ludwigshafen) | Notiz: keine | Berechnung: Soll 0:00, Ist 0:00, Pause 0:00, Saldo 0:00", "after": "Segmente: keine | Abwesenheiten: #40 Urlaub (Ludwigshafen) | Notiz: keine | Berechnung: Soll 0:00, Ist 0:00, Pause 0:00, Saldo 0:00", "entries": [{"status": "INFO", "date": "2026-07-11", "source": "Abwesenheiten", "action": "Abwesenheit übernommen", "before": "", "after": "Urlaub ganztägig (Ludwigshafen)", "details": "Zeile 215"}, {"status": "INFO", "date": "2026-07-11", "source": "Datenbank", "action": "Tag ersetzt", "before": "Segmente: keine | Abwesenheiten: #23 Urlaub (Ludwigshafen) | Notiz: keine | Berechnung: Soll 0:00, Ist 0:00, Pause 0:00, Saldo 0:00", "after": "Segmente: keine | Abwesenheiten: #40 Urlaub (Ludwigshafen) | Notiz: keine | Berechnung: Soll 0:00, Ist 0:00, Pause 0:00, Saldo 0:00", "details": "Nur dieser Tag wurde überschrieben."}], "status": "INFO", "status_label": "Erfolgreich", "status_class": "success", "summary": "Abwesenheit übernommen", "problem": "", "entry_count": 1}, {"id": "day-9", "date": "2026-07-12", "severity": 0, "before": "Segmente: keine | Abwesenheiten: #24 Urlaub (Ludwigshafen) | Notiz: keine | Berechnung: Soll 0:00, Ist 0:00, Pause 0:00, Saldo 0:00", "after": "Segmente: keine | Abwesenheiten: #41 Urlaub (Ludwigshafen) | Notiz: keine | Berechnung: Soll 0:00, Ist 0:00, Pause 0:00, Saldo 0:00", "entries": [{"status": "INFO", "date": "2026-07-12", "source": "Abwesenheiten", "action": "Abwesenheit übernommen", "before": "", "after": "Urlaub ganztägig (Ludwigshafen)", "details": "Zeile 216"}, {"status": "INFO", "date": "2026-07-12", "source": "Datenbank", "action": "Tag ersetzt", "before": "Segmente: keine | Abwesenheiten: #24 Urlaub (Ludwigshafen) | Notiz: keine | Berechnung: Soll 0:00, Ist 0:00, Pause 0:00, Saldo 0:00", "after": "Segmente: keine | Abwesenheiten: #41 Urlaub (Ludwigshafen) | Notiz: keine | Berechnung: Soll 0:00, Ist 0:00, Pause 0:00, Saldo 0:00", "details": "Nur dieser Tag wurde überschrieben."}], "status": "INFO", "status_label": "Erfolgreich", "status_class": "success", "summary": "Abwesenheit übernommen", "problem": "", "entry_count": 1}, {"id": "day-10", "date": "2026-07-13", "severity": 0, "before": "Segmente: keine | Abwesenheiten: #25 Urlaub (Heiligenhafen) | Notiz: keine | Berechnung: Soll 7:48, Ist 7:48, Pause 0:00, Saldo 0:00", "after": "Segmente: keine | Abwesenheiten: #42 Urlaub (Heiligenhafen) | Notiz: keine | Berechnung: Soll 7:48, Ist 7:48, Pause 0:00, Saldo 0:00", "entries": [{"status": "INFO", "date": "2026-07-13", "source": "Abwesenheiten", "action": "Abwesenheit übernommen", "before": "", "after": "Urlaub ganztägig (Heiligenhafen)", "details": "Zeile 217"}, {"status": "INFO", "date": "2026-07-13", "source": "Datenbank", "action": "Tag ersetzt", "before": "Segmente: keine | Abwesenheiten: #25 Urlaub (Heiligenhafen) | Notiz: keine | Berechnung: Soll 7:48, Ist 7:48, Pause 0:00, Saldo 0:00", "after": "Segmente: keine | Abwesenheiten: #42 Urlaub (Heiligenhafen) | Notiz: keine | Berechnung: Soll 7:48, Ist 7:48, Pause 0:00, Saldo 0:00", "details": "Nur dieser Tag wurde überschrieben."}], "status": "INFO", "status_label": "Erfolgreich", "status_class": "success", "summary": "Abwesenheit übernommen", "problem": "", "entry_count": 1}, {"id": "day-11", "date": "2026-07-14", "severity": 0, "before": "Segmente: keine | Abwesenheiten: #26 Urlaub (Heiligenhafen) | Notiz: keine | Berechnung: Soll 7:48, Ist 7:48, Pause 0:00, Saldo 0:00", "after": "Segmente: keine | Abwesenheiten: #43 Urlaub (Heiligenhafen) | Notiz: keine | Berechnung: Soll 7:48, Ist 7:48, Pause 0:00, Saldo 0:00", "entries": [{"status": "INFO", "date": "2026-07-14", "source": "Abwesenheiten", "action": "Abwesenheit übernommen", "before": "", "after": "Urlaub ganztägig (Heiligenhafen)", "details": "Zeile 218"}, {"status": "INFO", "date": "2026-07-14", "source": "Datenbank", "action": "Tag ersetzt", "before": "Segmente: keine | Abwesenheiten: #26 Urlaub (Heiligenhafen) | Notiz: keine | Berechnung: Soll 7:48, Ist 7:48, Pause 0:00, Saldo 0:00", "after": "Segmente: keine | Abwesenheiten: #43 Urlaub (Heiligenhafen) | Notiz: keine | Berechnung: Soll 7:48, Ist 7:48, Pause 0:00, Saldo 0:00", "details": "Nur dieser Tag wurde überschrieben."}], "status": "INFO", "status_label": "Erfolgreich", "status_class": "success", "summary": "Abwesenheit übernommen", "problem": "", "entry_count": 1}, {"id": "day-12", "date": "2026-07-15", "severity": 0, "before": "Segmente: keine | Abwesenheiten: #27 Urlaub (Heiligenhafen) | Notiz: keine | Berechnung: Soll 7:48, Ist 7:48, Pause 0:00, Saldo 0:00", "after": "Segmente: keine | Abwesenheiten: #44 Urlaub (Heiligenhafen) | Notiz: keine | Berechnung: Soll 7:48, Ist 7:48, Pause 0:00, Saldo 0:00", "entries": [{"status": "INFO", "date": "2026-07-15", "source": "Abwesenheiten", "action": "Abwesenheit übernommen", "before": "", "after": "Urlaub ganztägig (Heiligenhafen)", "details": "Zeile 219"}, {"status": "INFO", "date": "2026-07-15", "source": "Datenbank", "action": "Tag ersetzt", "before": "Segmente: keine | Abwesenheiten: #27 Urlaub (Heiligenhafen) | Notiz: keine | Berechnung: Soll 7:48, Ist 7:48, Pause 0:00, Saldo 0:00", "after": "Segmente: keine | Abwesenheiten: #44 Urlaub (Heiligenhafen) | Notiz: keine | Berechnung: Soll 7:48, Ist 7:48, Pause 0:00, Saldo 0:00", "details": "Nur dieser Tag wurde überschrieben."}], "status": "INFO", "status_label": "Erfolgreich", "status_class": "success", "summary": "Abwesenheit übernommen", "problem": "", "entry_count": 1}, {"id": "day-13", "date": "2026-07-16", "severity": 0, "before": "Segmente: keine | Abwesenheiten: #28 Urlaub (Heiligenhafen) | Notiz: keine | Berechnung: Soll 7:48, Ist 7:48, Pause 0:00, Saldo 0:00", "after": "Segmente: keine | Abwesenheiten: #45 Urlaub (Heiligenhafen) | Notiz: keine | Berechnung: Soll 7:48, Ist 7:48, Pause 0:00, Saldo 0:00", "entries": [{"status": "INFO", "date": "2026-07-16", "source": "Abwesenheiten", "action": "Abwesenheit übernommen", "before": "", "after": "Urlaub ganztägig (Heiligenhafen)", "details": "Zeile 220"}, {"status": "INFO", "date": "2026-07-16", "source": "Datenbank", "action": "Tag ersetzt", "before": "Segmente: keine | Abwesenheiten: #28 Urlaub (Heiligenhafen) | Notiz: keine | Berechnung: Soll 7:48, Ist 7:48, Pause 0:00, Saldo 0:00", "after": "Segmente: keine | Abwesenheiten: #45 Urlaub (Heiligenhafen) | Notiz: keine | Berechnung: Soll 7:48, Ist 7:48, Pause 0:00, Saldo 0:00", "details": "Nur dieser Tag wurde überschrieben."}], "status": "INFO", "status_label": "Erfolgreich", "status_class": "success", "summary": "Abwesenheit übernommen", "problem": "", "entry_count": 1}, {"id": "day-14", "date": "2026-07-17", "severity": 0, "before": "Segmente: keine | Abwesenheiten: #29 Urlaub (Heiligenhafen) | Notiz: keine | Berechnung: Soll 7:48, Ist 7:48, Pause 0:00, Saldo 0:00", "after": "Segmente: keine | Abwesenheiten: #46 Urlaub (Heiligenhafen) | Notiz: keine | Berechnung: Soll 7:48, Ist 7:48, Pause 0:00, Saldo 0:00", "entries": [{"status": "INFO", "date": "2026-07-17", "source": "Abwesenheiten", "action": "Abwesenheit übernommen", "before": "", "after": "Urlaub ganztägig (Heiligenhafen)", "details": "Zeile 221"}, {"status": "INFO", "date": "2026-07-17", "source": "Datenbank", "action": "Tag ersetzt", "before": "Segmente: keine | Abwesenheiten: #29 Urlaub (Heiligenhafen) | Notiz: keine | Berechnung: Soll 7:48, Ist 7:48, Pause 0:00, Saldo 0:00", "after": "Segmente: keine | Abwesenheiten: #46 Urlaub (Heiligenhafen) | Notiz: keine | Berechnung: Soll 7:48, Ist 7:48, Pause 0:00, Saldo 0:00", "details": "Nur dieser Tag wurde überschrieben."}], "status": "INFO", "status_label": "Erfolgreich", "status_class": "success", "summary": "Abwesenheit übernommen", "problem": "", "entry_count": 1}, {"id": "day-15", "date": "2026-07-18", "severity": 0, "before": "Segmente: keine | Abwesenheiten: #30 Urlaub (Heiligenhafen) | Notiz: keine | Berechnung: Soll 0:00, Ist 0:00, Pause 0:00, Saldo 0:00", "after": "Segmente: keine | Abwesenheiten: #47 Urlaub (Heiligenhafen) | Notiz: keine | Berechnung: Soll 0:00, Ist 0:00, Pause 0:00, Saldo 0:00", "entries": [{"status": "INFO", "date": "2026-07-18", "source": "Abwesenheiten", "action": "Abwesenheit übernommen", "before": "", "after": "Urlaub ganztägig (Heiligenhafen)", "details": "Zeile 222"}, {"status": "INFO", "date": "2026-07-18", "source": "Datenbank", "action": "Tag ersetzt", "before": "Segmente: keine | Abwesenheiten: #30 Urlaub (Heiligenhafen) | Notiz: keine | Berechnung: Soll 0:00, Ist 0:00, Pause 0:00, Saldo 0:00", "after": "Segmente: keine | Abwesenheiten: #47 Urlaub (Heiligenhafen) | Notiz: keine | Berechnung: Soll 0:00, Ist 0:00, Pause 0:00, Saldo 0:00", "details": "Nur dieser Tag wurde überschrieben."}], "status": "INFO", "status_label": "Erfolgreich", "status_class": "success", "summary": "Abwesenheit übernommen", "problem": "", "entry_count": 1}, {"id": "day-16", "date": "2026-07-19", "severity": 0, "before": "Segmente: keine | Abwesenheiten: #31 Urlaub (Heiligenhafen) | Notiz: keine | Berechnung: Soll 0:00, Ist 0:00, Pause 0:00, Saldo 0:00", "after": "Segmente: keine | Abwesenheiten: #48 Urlaub (Heiligenhafen) | Notiz: keine | Berechnung: Soll 0:00, Ist 0:00, Pause 0:00, Saldo 0:00", "entries": [{"status": "INFO", "date": "2026-07-19", "source": "Abwesenheiten", "action": "Abwesenheit übernommen", "before": "", "after": "Urlaub ganztägig (Heiligenhafen)", "details": "Zeile 223"}, {"status": "INFO", "date": "2026-07-19", "source": "Datenbank", "action": "Tag ersetzt", "before": "Segmente: keine | Abwesenheiten: #31 Urlaub (Heiligenhafen) | Notiz: keine | Berechnung: Soll 0:00, Ist 0:00, Pause 0:00, Saldo 0:00", "after": "Segmente: keine | Abwesenheiten: #48 Urlaub (Heiligenhafen) | Notiz: keine | Berechnung: Soll 0:00, Ist 0:00, Pause 0:00, Saldo 0:00", "details": "Nur dieser Tag wurde überschrieben."}], "status": "INFO", "status_label": "Erfolgreich", "status_class": "success", "summary": "Abwesenheit übernommen", "problem": "", "entry_count": 1}, {"id": "day-2", "date": "2026-07-20", "severity": 0, "before": "Segmente: #29 Arbeit 07:38-16:26 Büro | Abwesenheiten: keine | Notiz: keine | Berechnung: Soll 7:48, Ist 8:03, Pause 0:45, Saldo 0:15", "after": "Segmente: #41 Arbeit 07:38-16:26 Büro | Abwesenheiten: keine | Notiz: keine | Berechnung: Soll 7:48, Ist 8:03, Pause 0:45, Saldo 0:15", "entries": [{"status": "INFO", "date": "2026-07-20", "source": "Segmente", "action": "Segment übernommen", "before": "", "after": "Arbeit 07:38-16:26 Büro", "details": "Zeile 209"}, {"status": "INFO", "date": "2026-07-20", "source": "Datenbank", "action": "Tag ersetzt", "before": "Segmente: #29 Arbeit 07:38-16:26 Büro | Abwesenheiten: keine | Notiz: keine | Berechnung: Soll 7:48, Ist 8:03, Pause 0:45, Saldo 0:15", "after": "Segmente: #41 Arbeit 07:38-16:26 Büro | Abwesenheiten: keine | Notiz: keine | Berechnung: Soll 7:48, Ist 8:03, Pause 0:45, Saldo 0:15", "details": "Nur dieser Tag wurde überschrieben."}], "status": "INFO", "status_label": "Erfolgreich", "status_class": "success", "summary": "Segment übernommen", "problem": "", "entry_count": 1}, {"id": "day-3", "date": "2026-07-21", "severity": 0, "before": "Segmente: #30 Arbeit 07:39-16:29 Büro | Abwesenheiten: keine | Notiz: keine | Berechnung: Soll 7:48, Ist 8:05, Pause 0:45, Saldo 0:17", "after": "Segmente: #42 Arbeit 07:39-16:29 Büro | Abwesenheiten: keine | Notiz: keine | Berechnung: Soll 7:48, Ist 8:05, Pause 0:45, Saldo 0:17", "entries": [{"status": "INFO", "date": "2026-07-21", "source": "Segmente", "action": "Segment übernommen", "before": "", "after": "Arbeit 07:39-16:29 Büro", "details": "Zeile 210"}, {"status": "INFO", "date": "2026-07-21", "source": "Datenbank", "action": "Tag ersetzt", "before": "Segmente: #30 Arbeit 07:39-16:29 Büro | Abwesenheiten: keine | Notiz: keine | Berechnung: Soll 7:48, Ist 8:05, Pause 0:45, Saldo 0:17", "after": "Segmente: #42 Arbeit 07:39-16:29 Büro | Abwesenheiten: keine | Notiz: keine | Berechnung: Soll 7:48, Ist 8:05, Pause 0:45, Saldo 0:17", "details": "Nur dieser Tag wurde überschrieben."}], "status": "INFO", "status_label": "Erfolgreich", "status_class": "success", "summary": "Segment übernommen", "problem": "", "entry_count": 1}, {"id": "day-4", "date": "2026-07-22", "severity": 0, "before": "Segmente: #31 Arbeit 07:45-15:51 Büro | Abwesenheiten: keine | Notiz: keine | Berechnung: Soll 7:48, Ist 7:21, Pause 0:45, Saldo -0:27", "after": "Segmente: #43 Arbeit 07:45-15:51 Büro | Abwesenheiten: keine | Notiz: keine | Berechnung: Soll 7:48, Ist 7:21, Pause 0:45, Saldo -0:27", "entries": [{"status": "INFO", "date": "2026-07-22", "source": "Segmente", "action": "Segment übernommen", "before": "", "after": "Arbeit 07:45-15:51 Büro", "details": "Zeile 211"}, {"status": "INFO", "date": "2026-07-22", "source": "Datenbank", "action": "Tag ersetzt", "before": "Segmente: #31 Arbeit 07:45-15:51 Büro | Abwesenheiten: keine | Notiz: keine | Berechnung: Soll 7:48, Ist 7:21, Pause 0:45, Saldo -0:27", "after": "Segmente: #43 Arbeit 07:45-15:51 Büro | Abwesenheiten: keine | Notiz: keine | Berechnung: Soll 7:48, Ist 7:21, Pause 0:45, Saldo -0:27", "details": "Nur dieser Tag wurde überschrieben."}], "status": "INFO", "status_label": "Erfolgreich", "status_class": "success", "summary": "Segment übernommen", "problem": "", "entry_count": 1}, {"id": "day-5", "date": "2026-07-23", "severity": 0, "before": "Segmente: #32 Arbeit 06:50-17:02 Homeoffice | Abwesenheiten: keine | Notiz: keine | Berechnung: Soll 7:48, Ist 9:27, Pause 0:45, Saldo 1:39", "after": "Segmente: #44 Arbeit 06:50-17:02 Homeoffice | Abwesenheiten: keine | Notiz: keine | Berechnung: Soll 7:48, Ist 9:27, Pause 0:45, Saldo 1:39", "entries": [{"status": "INFO", "date": "2026-07-23", "source": "Segmente", "action": "Segment übernommen", "before": "", "after": "Arbeit 06:50-17:02 Homeoffice", "details": "Zeile 212"}, {"status": "INFO", "date": "2026-07-23", "source": "Datenbank", "action": "Tag ersetzt", "before": "Segmente: #32 Arbeit 06:50-17:02 Homeoffice | Abwesenheiten: keine | Notiz: keine | Berechnung: Soll 7:48, Ist 9:27, Pause 0:45, Saldo 1:39", "after": "Segmente: #44 Arbeit 06:50-17:02 Homeoffice | Abwesenheiten: keine | Notiz: keine | Berechnung: Soll 7:48, Ist 9:27, Pause 0:45, Saldo 1:39", "details": "Nur dieser Tag wurde überschrieben."}], "status": "INFO", "status_label": "Erfolgreich", "status_class": "success", "summary": "Segment übernommen", "problem": "", "entry_count": 1}, {"id": "day-6", "date": "2026-07-24", "severity": 1, "before": "Segmente: #37 Arbeit 06:53-offen Homeoffice | Abwesenheiten: keine | Notiz: keine | Berechnung: Soll 7:48, Ist 8:01, Pause 0:45, Saldo 0:13", "after": "Segmente: #45 Arbeit 06:53-offen Homeoffice | Abwesenheiten: keine | Notiz: keine | Berechnung: Soll 7:48, Ist 8:01, Pause 0:45, Saldo 0:13", "entries": [{"status": "INFO", "date": "2026-07-24", "source": "Segmente", "action": "Segment übernommen", "before": "", "after": "Arbeit 06:53-offen Homeoffice", "details": "Zeile 213"}, {"status": "WARNING", "date": "2026-07-24", "source": "Übersicht", "action": "Unvollständiges Tagesfenster", "before": "", "after": "Zeile 206: Beginn und Ende müssen beide gefüllt sein, damit daraus ein Segment wird.", "details": ""}, {"status": "INFO", "date": "2026-07-24", "source": "Datenbank", "action": "Tag ersetzt", "before": "Segmente: #37 Arbeit 06:53-offen Homeoffice | Abwesenheiten: keine | Notiz: keine | Berechnung: Soll 7:48, Ist 8:01, Pause 0:45, Saldo 0:13", "after": "Segmente: #45 Arbeit 06:53-offen Homeoffice | Abwesenheiten: keine | Notiz: keine | Berechnung: Soll 7:48, Ist 8:01, Pause 0:45, Saldo 0:13", "details": "Nur dieser Tag wurde überschrieben."}], "status": "WARNING", "status_label": "Warnung", "status_class": "warning", "summary": "Segment übernommen; Unvollständiges Tagesfenster", "problem": "Unvollständiges Tagesfenster - Zeile 206: Beginn und Ende müssen beide gefüllt sein, damit daraus ein Segment wird.", "entry_count": 2}];
+const IMPORT_COUNTS = {"rows_read": 222, "segments": 7, "day_types": 10, "notes": 0, "overview_rows": 205, "overview_segments": 1, "overview_day_types": 0, "overview_notes": 0, "summaries_ignored": 0, "rows_ignored": 0, "warnings": 1, "errors": 0};
+const IMPORT_SOURCE = "arbeitszeit_2026-01-01_bis_2026-07-24_20260724_153913.xlsx";
+const CREATED_AT = "2026-07-24 15:39:57";
+
+let sortKey = "date";
+let sortDirection = 1;
+const expanded = new Set();
+const search = document.getElementById("search");
+const status = document.getElementById("status");
+const rows = document.getElementById("rows");
+const count = document.getElementById("count");
+
+document.getElementById("source").textContent = `Quelle: ${IMPORT_SOURCE}`;
+document.getElementById("created").textContent = `Erstellt: ${CREATED_AT}`;
+document.getElementById("cards").innerHTML = [
+  ["Tage", IMPORT_GROUPS.length],
+  ["Zeilen", IMPORT_COUNTS.rows_read],
+  ["Segmente", IMPORT_COUNTS.segments + IMPORT_COUNTS.overview_segments],
+  ["Abwesenheiten", IMPORT_COUNTS.day_types + IMPORT_COUNTS.overview_day_types],
+  ["Notizen", IMPORT_COUNTS.notes + IMPORT_COUNTS.overview_notes],
+  ["Warnungen", IMPORT_COUNTS.warnings],
+  ["Fehler", IMPORT_COUNTS.errors],
+].map(([label, value]) => `<article class="card"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></article>`).join("");
+
+function render() {
+  const query = search.value.trim().toLowerCase();
+  const selectedStatus = status.value;
+  const filtered = IMPORT_GROUPS
+    .filter(group => !selectedStatus || group.status === selectedStatus)
+    .filter(group => groupMatches(group, query))
+    .sort((a, b) => String(a[sortKey] ?? "").localeCompare(String(b[sortKey] ?? ""), "de") * sortDirection);
+  rows.innerHTML = filtered.map(group => renderGroup(group)).join("");
+  rows.querySelectorAll("button[data-id]").forEach(button => {
+    button.addEventListener("click", () => {
+      const id = button.dataset.id;
+      if (expanded.has(id)) expanded.delete(id);
+      else expanded.add(id);
+      render();
+    });
+  });
+  count.textContent = `${filtered.length} von ${IMPORT_GROUPS.length} Tagen`;
+}
+
+function renderGroup(group) {
+  const isOpen = expanded.has(group.id);
+  return `
+    <tr class="day-row ${escapeHtml(group.status_class)}">
+      <td data-label="Status"><span class="badge ${escapeHtml(group.status_class)}">${escapeHtml(group.status_label)}</span></td>
+      <td data-label="Datum"><strong>${escapeHtml(group.date)}</strong></td>
+      <td data-label="Zusammenfassung">
+        <div>${escapeHtml(group.summary)}</div>
+        ${group.problem ? `<p class="problem">${escapeHtml(group.problem)}</p>` : ""}
+      </td>
+      <td data-label="Aktionen">${escapeHtml(group.entry_count)}</td>
+      <td data-label="Details"><button type="button" data-id="${escapeHtml(group.id)}" aria-expanded="${isOpen}">${isOpen ? "Schließen" : "Details"}</button></td>
+    </tr>
+    <tr class="detail-row ${isOpen ? "" : "is-hidden"}">
+      <td class="detail-cell" colspan="5">${renderDetails(group)}</td>
+    </tr>
+  `;
+}
+
+function renderDetails(group) {
+  return `
+    <section class="detail-panel">
+      <div class="detail-head">
+        <h2>${escapeHtml(group.date)}</h2>
+        <p>${escapeHtml(group.summary)}</p>
+        ${group.problem ? `<p class="problem">${escapeHtml(group.problem)}</p>` : ""}
+      </div>
+      <div class="compare-grid">
+        <section class="compare-box">
+          <h3>Vorher</h3>
+          <pre>${escapeHtml(group.before)}</pre>
+        </section>
+        <section class="compare-box">
+          <h3>Nachher</h3>
+          <pre>${escapeHtml(group.after)}</pre>
+        </section>
+      </div>
+      <table class="events">
+        <thead>
+          <tr>
+            <th>Status</th>
+            <th>Quelle</th>
+            <th>Aktion</th>
+            <th>Vorher / Erwartet</th>
+            <th>Nachher / Gefunden</th>
+            <th>Hinweis</th>
+          </tr>
+        </thead>
+        <tbody>${group.entries.map(renderEvent).join("")}</tbody>
+      </table>
+    </section>
+  `;
+}
+
+function renderEvent(entry) {
+  return `
+    <tr class="event-status-${escapeHtml(entry.status)}">
+      <td>${escapeHtml(entry.status)}</td>
+      <td>${escapeHtml(entry.source)}</td>
+      <td>${escapeHtml(entry.action)}</td>
+      <td>${escapeHtml(entry.before)}</td>
+      <td>${escapeHtml(entry.after)}</td>
+      <td>${escapeHtml(entry.details)}</td>
+    </tr>
+  `;
+}
+
+function groupMatches(group, query) {
+  if (!query) return true;
+  return JSON.stringify(group).toLowerCase().includes(query);
+}
+
+function escapeHtml(value) {
+  return String(value ?? "").replace(/[&<>"']/g, char => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;"
+  }[char]));
+}
+
+document.querySelectorAll("th[data-key]").forEach(th => {
+  th.addEventListener("click", () => {
+    const key = th.dataset.key;
+    if (sortKey === key) sortDirection *= -1;
+    else {
+      sortKey = key;
+      sortDirection = 1;
+    }
+    render();
+  });
+});
+search.addEventListener("input", render);
+status.addEventListener("change", render);
+render();
+  </script>
+</body>
+</html>

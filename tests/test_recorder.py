@@ -39,6 +39,39 @@ def test_auto_start_uses_homeoffice_buffer(tmp_path, monkeypatch):
         assert segment["location"] == "HOME"
 
 
+def test_auto_start_preview_does_not_write_segment(tmp_path, monkeypatch):
+    db_path = tmp_path / "database.db"
+    database.init_db(db_path)
+    recorder = WorktimeRecorder(db_path)
+
+    monkeypatch.setattr("tracker.recorder.current_time_str", lambda: "07:00:00")
+    with database.connect(db_path) as conn:
+        database.set_settings(conn, {"home_start_buffer_minutes": "10"})
+
+    plan = recorder.preview_auto_start_day()
+
+    assert plan is not None
+    assert plan.time == "06:50:00"
+    with database.connect(db_path) as conn:
+        assert database.get_segments_for_date(conn, today_str()) == []
+
+
+def test_auto_start_can_use_popup_adjusted_time(tmp_path, monkeypatch):
+    db_path = tmp_path / "database.db"
+    database.init_db(db_path)
+    recorder = WorktimeRecorder(db_path)
+
+    monkeypatch.setattr("tracker.recorder.current_time_str", lambda: "07:00:00")
+
+    event = recorder.auto_start_day(at_time="06:55")
+
+    assert event is not None
+    assert event.time == "06:55:00"
+    with database.connect(db_path) as conn:
+        segment = database.get_segments_for_date(conn, today_str())[0]
+        assert segment["start_time"] == "06:55:00"
+
+
 def test_auto_start_can_be_disabled(tmp_path, monkeypatch):
     db_path = tmp_path / "database.db"
     database.init_db(db_path)
@@ -66,6 +99,69 @@ def test_manual_start_does_not_use_buffer(tmp_path, monkeypatch):
 
     assert event is not None
     assert event.time == "07:00:00"
+
+
+def test_auto_shutdown_end_uses_homeoffice_buffer(tmp_path, monkeypatch):
+    db_path = tmp_path / "database.db"
+    database.init_db(db_path)
+    recorder = WorktimeRecorder(db_path)
+    today = today_str()
+
+    monkeypatch.setattr("tracker.recorder.current_time_str", lambda: "17:00:00")
+    with database.connect(db_path) as conn:
+        database.set_settings(conn, {"home_end_buffer_minutes": "2"})
+        segment_id = database.add_segment(conn, today, "WORK", "08:00:00", location="HOME")
+
+    event = recorder.end_day(source="AUTO_SHUTDOWN")
+
+    assert event is not None
+    assert event.time == "17:02:00"
+    with database.connect(db_path) as conn:
+        segment = database.get_segment(conn, segment_id)
+        assert segment["end_time"] == "17:02:00"
+
+
+def test_auto_shutdown_end_uses_office_buffer(tmp_path, monkeypatch):
+    db_path = tmp_path / "database.db"
+    database.init_db(db_path)
+    recorder = WorktimeRecorder(db_path)
+    today = today_str()
+
+    monkeypatch.setattr("tracker.recorder.current_time_str", lambda: "17:00:00")
+    with database.connect(db_path) as conn:
+        database.set_settings(
+            conn,
+            {
+                "office_end_buffer_minutes": "3",
+                "home_end_buffer_minutes": "9",
+            },
+        )
+        segment_id = database.add_segment(conn, today, "WORK", "08:00:00", location="OFFICE")
+
+    event = recorder.end_day(source="AUTO_SHUTDOWN")
+
+    assert event is not None
+    assert event.time == "17:03:00"
+    with database.connect(db_path) as conn:
+        segment = database.get_segment(conn, segment_id)
+        assert segment["end_time"] == "17:03:00"
+
+
+def test_manual_end_day_ignores_end_buffer(tmp_path, monkeypatch):
+    db_path = tmp_path / "database.db"
+    database.init_db(db_path)
+    recorder = WorktimeRecorder(db_path)
+    today = today_str()
+
+    monkeypatch.setattr("tracker.recorder.current_time_str", lambda: "17:00:00")
+    with database.connect(db_path) as conn:
+        database.set_settings(conn, {"home_end_buffer_minutes": "5"})
+        database.add_segment(conn, today, "WORK", "08:00:00", location="HOME")
+
+    event = recorder.end_day()
+
+    assert event is not None
+    assert event.time == "17:00:00"
 
 
 def test_previous_open_segment_uses_heartbeat_recovery(tmp_path, monkeypatch):
@@ -130,6 +226,28 @@ def test_previous_open_segment_asks_when_automatic_recovery_is_disabled(tmp_path
     assert asked
     assert events[0].kind == "RECOVERY"
     assert events[0].time == "16:00:00"
+
+
+def test_previous_open_segment_can_skip_popup_when_disabled(tmp_path, monkeypatch):
+    db_path = tmp_path / "database.db"
+    database.init_db(db_path)
+    recorder = WorktimeRecorder(db_path)
+    monkeypatch.setattr("tracker.recorder.today_str", lambda: "2026-07-09")
+    asked = []
+
+    with database.connect(db_path) as conn:
+        segment_id = database.add_segment(conn, "2026-07-08", "WORK", "08:00:00", location="OFFICE")
+
+    events = recorder.recover_previous_open_segments(
+        lambda segment: asked.append(segment["id"]) or "16:00",
+        allow_prompt=False,
+    )
+
+    assert events == []
+    assert asked == []
+    with database.connect(db_path) as conn:
+        segment = database.get_segment(conn, segment_id)
+        assert segment["end_time"] is None
 
 
 def test_record_heartbeat_stores_local_iso_timestamp(tmp_path):

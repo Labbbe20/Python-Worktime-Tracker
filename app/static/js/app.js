@@ -5,7 +5,7 @@ const state = {
   calendarDetailDate: null,
   entryEditDate: null,
   dashboardDetailKey: null,
-  settingsDetailKey: "work",
+  settingsDetailKey: "",
   entries: [],
   entriesSort: { key: "date", direction: -1 },
   statsChart: null,
@@ -13,11 +13,12 @@ const state = {
 
 const content = document.getElementById("content");
 const toast = document.getElementById("toast");
+const shell = document.querySelector(".shell");
 let commandPollTimer = null;
 let autoRefreshTimer = null;
 let chartLibraryPromise = null;
 
-document.querySelectorAll(".nav button").forEach(button => {
+document.querySelectorAll(".nav button[data-view]").forEach(button => {
   button.addEventListener("click", () => setView(button.dataset.view));
 });
 
@@ -57,8 +58,11 @@ async function checkInitialSetup(settings = null) {
   try {
     settings = settings || await api("settings");
     if (settings.initial_setup_required !== "1") return;
-    state.view = "settings";
-    state.settingsDetailKey = "setup";
+    if (state.view !== "settings") {
+      notify("Startwerte sind noch offen. Du findest sie in den Einstellungen.");
+      return;
+    }
+    state.settingsDetailKey = "start";
     window.location.hash = "settings";
     syncNav();
     await renderSettings();
@@ -69,6 +73,9 @@ async function checkInitialSetup(settings = null) {
 }
 
 function setView(view) {
+  if (view === "settings") {
+    state.settingsDetailKey = "";
+  }
   state.view = view;
   window.location.hash = view;
   syncNav();
@@ -76,6 +83,7 @@ function setView(view) {
 }
 
 function syncNav() {
+  shell?.classList.toggle("utility-view", state.view === "settings");
   document.querySelectorAll(".nav button").forEach(button => {
     button.classList.toggle("active", button.dataset.view === state.view);
   });
@@ -149,6 +157,13 @@ async function renderDashboard() {
         detailRow("Jahr", String(new Date(data.today).getFullYear())),
         detailText("Urlaubstage werden aus den eingetragenen Abwesenheiten berechnet.", "muted"),
       ].join(""),
+    },
+    {
+      key: "next_absence",
+      label: "Nächste Abwesenheit",
+      value: absenceCountdownValue(data.next_absence),
+      extraClass: "countdown-card",
+      detailHtml: absenceCountdownDetail(data.next_absence),
     },
     {
       key: "office",
@@ -295,7 +310,7 @@ function renderDayTile(day) {
   const note = dayDisplayNote(day);
   return `
     <button class="day-tile ${klass} ${state.calendarDetailDate === day.date ? "active" : ""}" data-date="${day.date}" aria-expanded="${state.calendarDetailDate === day.date ? "true" : "false"}">
-      <strong>${Number(day.date.slice(-2))}. ${label}</strong>
+      <strong><span class="day-number">${Number(day.date.slice(-2))}.</span><span class="day-label"> ${label}</span></strong>
       <small>${summary.actual_minutes ? fmtMinutes(summary.actual_minutes) : ""} ${balance}</small>
       <small>${escapeHtml(note)}</small>
     </button>
@@ -390,7 +405,7 @@ function renderDayEditorContent(detail, date) {
         <label>Notiz
           <textarea name="note">${escapeHtml(detail.note || "")}</textarea>
         </label>
-        <button style="margin-top:8px">Notiz speichern</button>
+        <button class="form-submit">Notiz speichern</button>
       </form>
     </div>
   `;
@@ -415,19 +430,19 @@ function renderSegmentTable(segments, date) {
         <tbody>
           ${segments.map(segment => `
             <tr data-id="${segment.id}">
-              <td>
+              <td data-label="Typ">
                 <select name="type">
                   ${["WORK", "BREAK", "ABSENCE"].map(value => `<option value="${value}" ${segment.type === value ? "selected" : ""}>${segmentTypeLabel(value)}</option>`).join("")}
                 </select>
               </td>
-              <td><input name="start_time" type="time" value="${escapeHtml((segment.start_time || "").slice(0, 5))}"></td>
-              <td><input name="end_time" type="time" value="${escapeHtml((segment.end_time || "").slice(0, 5))}"></td>
-              <td>
+              <td data-label="Beginn"><input name="start_time" type="time" value="${escapeHtml((segment.start_time || "").slice(0, 5))}"></td>
+              <td data-label="Ende"><input name="end_time" type="time" value="${escapeHtml((segment.end_time || "").slice(0, 5))}"></td>
+              <td data-label="Standort">
                 <select name="location">
                   ${["UNKNOWN", "OFFICE", "HOME"].map(value => `<option value="${value}" ${segment.location === value ? "selected" : ""}>${locationLabel(value)}</option>`).join("")}
                 </select>
               </td>
-              <td class="row-actions">
+              <td class="row-actions" data-label="Aktionen">
                 <button class="save-segment" data-date="${date}">Speichern</button>
                 <button class="danger delete-segment">Löschen</button>
               </td>
@@ -530,8 +545,8 @@ function drawEntries() {
     state.entryEditDate = null;
   }
   target.innerHTML = `
-    <div class="table-wrap">
-      <table>
+    <div class="table-wrap entry-table-wrap">
+      <table class="entries-table">
         <thead><tr>${[
           ["date", "Datum"], ["start", "Beginn"], ["end", "Ende"], ["break_minutes", "Pause"],
           ["actual_minutes", "Stunden"], ["balance_minutes", "Saldo"], ["type", "Typ"], ["location", "Standort"], ["note", "Notiz"]
@@ -540,16 +555,21 @@ function drawEntries() {
           const editing = state.entryEditDate === row.date;
           return `
           <tr class="entry-row ${editing ? "is-editing" : ""}">
-            <td>${row.date}</td>
-            <td>${timeShort(row.start)}</td>
-            <td>${timeShort(row.end)}</td>
-            <td>${fmtMinutes(row.break_minutes)}</td>
-            <td>${fmtMinutes(row.actual_minutes)}</td>
-            <td class="${row.balance_minutes >= 0 ? "positive" : "negative"}">${signedMinutes(row.balance_minutes)}</td>
-            <td>${categoryLabel(row.type)}</td>
-            <td>${locationLabel(row.location)}</td>
-            <td>${escapeHtml(row.note)}</td>
-            <td><button class="secondary edit-entry" data-date="${row.date}" aria-expanded="${editing ? "true" : "false"}">${editing ? "Schließen" : "Bearbeiten"}</button></td>
+            <td data-label="Datum" class="entry-date-cell"><strong>${row.date}</strong><small>${weekdayShort(row.date)}<span class="entry-inline-range"> · ${entryRangeLabel(row)}</span></small></td>
+            <td data-label="Beginn" class="entry-start-cell entry-time-cell">${timeShort(row.start) || "—"}</td>
+            <td data-label="Ende" class="entry-end-cell entry-time-cell">${timeShort(row.end) || "—"}</td>
+            <td data-label="Pause" class="entry-detail-cell">${fmtMinutes(row.break_minutes)}</td>
+            <td data-label="Stunden" class="entry-detail-cell">${fmtMinutes(row.actual_minutes)}</td>
+            <td data-label="Saldo" class="entry-balance-cell ${row.balance_minutes >= 0 ? "positive" : "negative"}">${signedMinutes(row.balance_minutes)}</td>
+            <td data-label="Typ" class="entry-detail-cell">${categoryLabel(row.type)}</td>
+            <td data-label="Standort" class="entry-detail-cell">${locationLabel(row.location)}</td>
+            <td data-label="Notiz" class="entry-detail-cell entry-note-cell">${escapeHtml(row.note || "—")}</td>
+            <td class="row-actions entry-action-cell" data-label="Aktionen">
+              <button class="secondary edit-entry entry-toggle" data-date="${row.date}" aria-expanded="${editing ? "true" : "false"}" aria-label="${editing ? "Details schließen" : `Details zu ${row.date} öffnen`}">
+                <span class="button-label">${editing ? "Schließen" : "Details"}</span>
+                <span class="toggle-chevron" aria-hidden="true"></span>
+              </button>
+            </td>
           </tr>
           ${editing ? `<tr class="entry-editor-row"><td colspan="10"><section id="entry-edit-panel" class="detail-panel stack entry-inline-panel"><div class="loading">Lade Eintrag ${escapeHtml(row.date)} …</div></section></td></tr>` : ""}
         `;
@@ -618,7 +638,7 @@ async function loadStatistics() {
   const data = await api("statistics", year);
   const body = document.getElementById("stats-body");
   body.innerHTML = `
-    <div class="grid cols-4">
+    <div class="grid cols-4 stats-metrics">
       ${metric("Soll", fmtMinutes(data.target_minutes))}
       ${metric("Ist", fmtMinutes(data.actual_minutes))}
       ${balanceMetric("Gleitzeit", data.flextime_hours, data.flextime_status, data.flextime_minutes)}
@@ -628,7 +648,7 @@ async function loadStatistics() {
       ${metric("Büro", `${data.office_days} Tage`)}
       ${metric("Homeoffice", `${data.homeoffice_days} Tage`)}
     </div>
-    <div class="panel">
+    <div class="panel stats-chart-panel">
       <h2>Monatssalden</h2>
       <canvas id="stats-chart" height="280" aria-label="Balkendiagramm der Monatssalden"></canvas>
     </div>
@@ -637,14 +657,14 @@ async function loadStatistics() {
         <thead><tr><th>Monat</th><th>Soll</th><th>Ist</th><th>Saldo</th><th>Kumuliert</th><th>Urlaub</th><th>Krank</th><th>Homeoffice</th></tr></thead>
         <tbody>${data.months.map(month => `
           <tr>
-            <td>${month.year_month}</td>
-            <td>${fmtMinutes(month.target_minutes)}</td>
-            <td>${fmtMinutes(month.actual_minutes)}</td>
-            <td>${signedMinutes(month.balance_minutes)}</td>
-            <td>${balanceBadge(month.carry_over_hours, month.carry_over_status)}</td>
-            <td>${numberDe(month.vacation_days_used)}</td>
-            <td>${numberDe(month.sick_days_used)}</td>
-            <td>${month.homeoffice_days}</td>
+            <td data-label="Monat">${month.year_month}</td>
+            <td data-label="Soll">${fmtMinutes(month.target_minutes)}</td>
+            <td data-label="Ist">${fmtMinutes(month.actual_minutes)}</td>
+            <td data-label="Saldo">${signedMinutes(month.balance_minutes)}</td>
+            <td data-label="Kumuliert">${balanceBadge(month.carry_over_hours, month.carry_over_status)}</td>
+            <td data-label="Urlaub">${numberDe(month.vacation_days_used)}</td>
+            <td data-label="Krank">${numberDe(month.sick_days_used)}</td>
+            <td data-label="Homeoffice">${month.homeoffice_days}</td>
           </tr>
         `).join("")}</tbody>
       </table>
@@ -701,11 +721,11 @@ async function renderVacation() {
         <label>Umfang
           <select name="half_day"><option value="0">Ganzer Tag</option><option value="1">Halber Tag</option></select>
         </label>
-        <label style="grid-column:1 / -1">Notiz <input name="note" type="text"></label>
+        <label class="field-wide">Notiz <input name="note" type="text"></label>
         <button>Speichern</button>
       </form>
     </section>
-    <section class="panel stack" style="margin-top:16px">
+    <section class="panel stack section-gap">
       <div class="page-head compact">
         <div><h2>Geplante Abwesenheiten</h2><p>Zusammenhängende Einträge mit angerechneten Arbeitstagen.</p></div>
         <label>Jahr <input id="absence-year" type="number" value="${year}" min="2000" max="2100"></label>
@@ -748,12 +768,12 @@ async function loadAbsences() {
       <thead><tr><th>Zeitraum</th><th>Typ</th><th>Kalendertage</th><th>Angerechnet</th><th>Notiz</th><th>Aktionen</th></tr></thead>
       <tbody>${data.rows.map(row => `
         <tr>
-          <td>${escapeHtml(periodLabel(row.start_date, row.end_date))}</td>
-          <td>${categoryLabel(row.type)}${row.half_day ? " (halb)" : ""}</td>
-          <td>${numberDe(row.days)}</td>
-          <td>${escapeHtml(absenceCountLabel(row))}</td>
-          <td>${escapeHtml(row.note || "")}</td>
-          <td><button class="secondary delete-absence" data-ids="${escapeHtml((row.ids || []).join(","))}">Entfernen</button></td>
+          <td data-label="Zeitraum">${escapeHtml(periodLabel(row.start_date, row.end_date))}</td>
+          <td data-label="Typ">${categoryLabel(row.type)}${row.half_day ? " (halb)" : ""}</td>
+          <td data-label="Kalendertage">${numberDe(row.days)}</td>
+          <td data-label="Angerechnet">${escapeHtml(absenceCountLabel(row))}</td>
+          <td data-label="Notiz">${escapeHtml(row.note || "")}</td>
+          <td class="row-actions" data-label="Aktionen"><button class="secondary delete-absence" data-ids="${escapeHtml((row.ids || []).join(","))}">Entfernen</button></td>
         </tr>
       `).join("")}</tbody>
     </table>
@@ -777,23 +797,40 @@ async function renderSettings() {
   const settings = await api("settings");
   const sections = settingsSections(settings);
   if (state.settingsDetailKey && !sections.some(section => section.key === state.settingsDetailKey)) {
-    state.settingsDetailKey = sections[0]?.key || "work";
+    state.settingsDetailKey = "";
   }
   const active = state.settingsDetailKey ? sections.find(section => section.key === state.settingsDetailKey) : null;
   content.innerHTML = `
     <div class="page-head">
       <div><h1>Einstellungen</h1><p>Arbeitsmodell, Automatisierung, Urlaub und Abwesenheiten, Standortcheck, Backup und Export.</p></div>
+      ${active ? `<button class="secondary" id="settings-overview" type="button">Übersicht</button>` : ""}
     </div>
-    <section class="settings-card-grid">
-      ${sections.map(section => settingsSectionCard(section)).join("")}
-    </section>
-    ${active ? renderSettingsPanel(active, settings) : ""}
+    ${active ? `
+      <section class="settings-workspace">
+        ${renderSettingsSubnav(sections)}
+        ${renderSettingsPanel(active, settings)}
+      </section>
+    ` : `
+      <section class="settings-card-grid">
+        ${sections.map(section => settingsSectionCard(section)).join("")}
+      </section>
+    `}
   `;
   document.querySelectorAll(".settings-card").forEach(button => {
     button.addEventListener("click", () => {
-      state.settingsDetailKey = state.settingsDetailKey === button.dataset.section ? "" : button.dataset.section;
+      state.settingsDetailKey = button.dataset.section;
       renderSettings();
     });
+  });
+  document.querySelectorAll(".settings-subnav button[data-section]").forEach(button => {
+    button.addEventListener("click", () => {
+      state.settingsDetailKey = button.dataset.section;
+      renderSettings();
+    });
+  });
+  document.getElementById("settings-overview")?.addEventListener("click", () => {
+    state.settingsDetailKey = "";
+    renderSettings();
   });
   bindSettingsForm(active);
   document.getElementById("backup-now")?.addEventListener("click", async () => {
@@ -806,21 +843,54 @@ async function renderSettings() {
     const result = await api("export_period", form.start_date.value, form.end_date.value, form.format.value);
     notify(`Export erstellt: ${result.name}`);
   });
+  const importButton = document.getElementById("import-file");
+  const importInput = document.getElementById("import-file-input");
+  importButton?.addEventListener("click", () => {
+    importInput?.click();
+  });
+  importInput?.addEventListener("change", async event => {
+    const file = event.currentTarget.files?.[0];
+    if (!file) return;
+    const button = importButton;
+    const output = document.getElementById("import-result");
+    if (button) {
+      button.disabled = true;
+      button.textContent = "Importiere ...";
+    }
+    try {
+      const payload = await fileToBase64(file);
+      const result = await api("import_uploaded_file", file.name, payload);
+      const range = result.start_date ? `${result.start_date} bis ${result.end_date}` : "keine Änderungen";
+      const warningText = Number(result.warnings || 0) ? ` · Warnungen ${result.warnings}` : "";
+      const logButton = result.log_path ? `<button id="open-import-log" class="secondary" type="button" data-path="${escapeHtml(result.log_path)}">Protokoll öffnen</button>` : "";
+      if (output) {
+        output.innerHTML = `<div class="success-panel"><strong>Import abgeschlossen</strong><small>${escapeHtml(result.name)} · ${escapeHtml(range)} · Segmente ${result.segments + (result.overview_segments || 0)}, Abwesenheiten ${result.day_types + (result.overview_day_types || 0)}, Notizen ${result.notes + (result.overview_notes || 0)}${escapeHtml(warningText)} · Protokoll ${escapeHtml(result.log_name || "")}</small>${logButton}</div>`;
+        document.getElementById("open-import-log")?.addEventListener("click", async event => {
+          try {
+            await api("open_import_log", event.currentTarget.dataset.path);
+          } catch (error) {
+            notify(error.message || String(error), "error");
+          }
+        });
+      }
+      notify(`Import abgeschlossen: ${result.name}`);
+    } catch (error) {
+      notify(error.message || String(error), "error");
+      if (output) output.innerHTML = `<div class="error-panel">${escapeHtml(error.message || String(error))}</div>`;
+    } finally {
+      event.currentTarget.value = "";
+      if (button) {
+        button.disabled = false;
+        button.textContent = "Daten importieren";
+      }
+    }
+  });
   document.getElementById("open-reset-dialog")?.addEventListener("click", openResetDialog);
 }
 
 function settingsSections(settings) {
-  const sections = [];
-  if (settings.initial_setup_required === "1") {
-    sections.push({
-      key: "setup",
-      title: "Ersteinrichtung",
-      summary: "Startwerte nach Reset eintragen",
-      body: renderSetupSettings(settings),
-      setup: true,
-    });
-  }
-  return sections.concat([
+  const setupRequired = settings.initial_setup_required === "1";
+  return [
     {
       key: "work",
       title: "Arbeitsmodell",
@@ -829,10 +899,10 @@ function settingsSections(settings) {
     },
     {
       key: "start",
-      title: "Startwerte",
-      summary: "Gleitzeit, Urlaub und Nachträge",
+      title: setupRequired ? "Startwerte einrichten" : "Startwerte",
+      summary: setupRequired ? "Einmalig nach dem Zurücksetzen ausfüllen" : "Gleitzeit, Urlaub und Nachträge",
       body: renderSetupSettings(settings),
-      setup: false,
+      setup: setupRequired,
     },
     {
       key: "automation",
@@ -841,9 +911,15 @@ function settingsSections(settings) {
       body: renderAutomationSettings(settings),
     },
     {
+      key: "popups",
+      title: "Popups",
+      summary: "Arbeitsbeginn, Arbeitsende und Tagesinfo",
+      body: renderPopupSettings(settings),
+    },
+    {
       key: "location",
       title: "Standort & Puffer",
-      summary: "Büro/Homeoffice-Erkennung und Startversatz",
+      summary: "Büro/Homeoffice-Erkennung, Start- und Endeversatz",
       body: renderLocationSettings(settings),
     },
     {
@@ -867,7 +943,7 @@ function settingsSections(settings) {
       danger: true,
       plain: true,
     },
-  ]);
+  ];
 }
 
 function settingsSectionCard(section) {
@@ -880,6 +956,23 @@ function settingsSectionCard(section) {
   `;
 }
 
+function renderSettingsSubnav(sections) {
+  return `
+    <nav class="settings-subnav" aria-label="Einstellungskategorien">
+      <button class="secondary settings-back" id="close-settings-detail" type="button">Zur Übersicht</button>
+      ${sections.map(section => {
+        const active = state.settingsDetailKey === section.key;
+        return `
+          <button class="${active ? "active" : ""} ${section.danger ? "danger-zone" : ""}" type="button" data-section="${escapeHtml(section.key)}" aria-current="${active ? "page" : "false"}">
+            <span>${escapeHtml(section.title)}</span>
+            <small>${escapeHtml(section.summary)}</small>
+          </button>
+        `;
+      }).join("")}
+    </nav>
+  `;
+}
+
 function renderSettingsPanel(section, settings) {
   return `
     <section class="detail-panel settings-detail-panel" aria-live="polite">
@@ -888,13 +981,12 @@ function renderSettingsPanel(section, settings) {
           <h2>${escapeHtml(section.title)}</h2>
           <p>${escapeHtml(section.summary)}</p>
         </div>
-        <button class="secondary" id="close-settings-detail" type="button">Schließen</button>
       </div>
       ${section.plain ? section.body : `
-        <form id="settings-form" class="grid cols-2" data-section="${escapeHtml(section.key)}">
+        <form id="settings-form" class="settings-form grid cols-2" data-section="${escapeHtml(section.key)}">
           ${section.body}
           ${section.setup ? `<input type="hidden" name="initial_setup_required" value="0">` : ""}
-          <button>${section.setup ? "Einrichtung speichern" : "Speichern"}</button>
+          <div class="form-actions"><button>${section.setup ? "Einrichtung speichern" : "Speichern"}</button></div>
         </form>
       `}
     </section>
@@ -955,6 +1047,14 @@ function renderLocationSettings(settings) {
       <input name="home_start_buffer_minutes" type="number" min="0" step="1" value="${escapeHtml(settings.home_start_buffer_minutes || "0")}">
       <small class="help-text">Für den Start im privaten WLAN vor VPN-Verbindung.</small>
     </label>
+    <label>Arbeitsende-Puffer Büro (Minuten)
+      <input name="office_end_buffer_minutes" type="number" min="0" step="1" value="${escapeHtml(settings.office_end_buffer_minutes || "0")}">
+      <small class="help-text">Wird beim automatischen Feierabend durch Windows-Herunterfahren auf die erkannte Endzeit aufgeschlagen.</small>
+    </label>
+    <label>Arbeitsende-Puffer Homeoffice (Minuten)
+      <input name="home_end_buffer_minutes" type="number" min="0" step="1" value="${escapeHtml(settings.home_end_buffer_minutes || "0")}">
+      <small class="help-text">Für den Weg vom automatischen Shutdown bis zur echten Abmeldung.</small>
+    </label>
   `;
 }
 
@@ -999,6 +1099,50 @@ function renderAutomationSettings(settings) {
   `;
 }
 
+function renderPopupSettings(settings) {
+  return `
+    <label>Arbeitsbeginn-Popup
+      <select name="work_start_popup_mode">
+        <option value="off" ${settings.work_start_popup_mode !== "on" ? "selected" : ""}>Aus</option>
+        <option value="on" ${settings.work_start_popup_mode === "on" ? "selected" : ""}>An</option>
+      </select>
+      <small class="help-text">Wenn aktiv, zeigt der Tracker die automatisch geplante Startzeit an. Schließen speichert automatisch diese Zeit; „nicht speichern“ legt keinen Arbeitsbeginn an.</small>
+    </label>
+    <label>Arbeitsende-Popup
+      <select name="work_end_popup_mode">
+        <option value="off" ${settings.work_end_popup_mode === "off" ? "selected" : ""}>Aus</option>
+        <option value="open_only" ${settings.work_end_popup_mode !== "off" && settings.work_end_popup_mode !== "always" ? "selected" : ""}>Nur wenn ein Segment offen ist</option>
+        <option value="always" ${settings.work_end_popup_mode === "always" ? "selected" : ""}>Immer prüfen</option>
+      </select>
+      <small class="help-text">„Immer“ zeigt auch das letzte gespeicherte Arbeitsende an, damit du es korrigieren kannst.</small>
+    </label>
+    <label>Wann Arbeits-Popups anzeigen?
+      <select name="work_popup_timing">
+        <option value="startup" ${settings.work_popup_timing !== "work_end" && settings.work_popup_timing !== "custom" ? "selected" : ""}>Beim Start des Trackers</option>
+        <option value="work_end" ${settings.work_popup_timing === "work_end" ? "selected" : ""}>Beim Feierabend-Klick</option>
+        <option value="custom" ${settings.work_popup_timing === "custom" ? "selected" : ""}>Zu fester Uhrzeit</option>
+      </select>
+    </label>
+    <label class="conditional-field" data-show-when="work_popup_timing:custom">
+      Uhrzeit für Arbeits-Popups
+      <input name="work_popup_custom_time" type="time" value="${escapeHtml(settings.work_popup_custom_time || "07:00")}">
+      <small class="help-text">Gilt nur, wenn „Zu fester Uhrzeit“ ausgewählt ist.</small>
+    </label>
+    <label>Tagesinfo-Popup
+      <select name="daily_info_popup_mode">
+        <option value="off" ${settings.daily_info_popup_mode !== "work_end" && settings.daily_info_popup_mode !== "custom" ? "selected" : ""}>Aus</option>
+        <option value="work_end" ${settings.daily_info_popup_mode === "work_end" ? "selected" : ""}>Bei Arbeitsende</option>
+        <option value="custom" ${settings.daily_info_popup_mode === "custom" ? "selected" : ""}>Zu fester Uhrzeit</option>
+      </select>
+      <small class="help-text">Zeigt Arbeitszeit, Pause, Soll, Tages-Saldo und Segmente des aktuellen Tages.</small>
+    </label>
+    <label class="conditional-field" data-show-when="daily_info_popup_mode:custom">
+      Uhrzeit für Tagesinfo
+      <input name="daily_info_popup_time" type="time" value="${escapeHtml(settings.daily_info_popup_time || "16:30")}">
+    </label>
+  `;
+}
+
 function settingToggle(name, label, value, helpText) {
   return `
     <label>${escapeHtml(label)}
@@ -1019,6 +1163,13 @@ function renderAppearanceSettings(settings) {
         <option value="1" ${settings.darkmode === "1" ? "selected" : ""}>An</option>
       </select>
     </label>
+    <label>Dashboard-Countdown
+      <select name="dashboard_absence_countdown_mode">
+        <option value="workdays" ${settings.dashboard_absence_countdown_mode !== "calendar_days" ? "selected" : ""}>Arbeitstage anzeigen</option>
+        <option value="calendar_days" ${settings.dashboard_absence_countdown_mode === "calendar_days" ? "selected" : ""}>Kalendertage anzeigen</option>
+      </select>
+      <small class="help-text">Bestimmt die große Zahl der Kachel „Nächste Abwesenheit“. In den Details werden immer beide Werte angezeigt.</small>
+    </label>
   `;
 }
 
@@ -1036,6 +1187,15 @@ function renderFileSettings() {
         </label>
         <button>Export erstellen</button>
       </form>
+      <div class="import-panel">
+        <div>
+          <strong>Daten importieren</strong>
+          <small>CSV oder Excel aus einem Arbeitszeit-Export. Summenzeilen werden ignoriert, echte Segmente, Abwesenheiten und Notizen werden übernommen.</small>
+        </div>
+        <button id="import-file" class="secondary" type="button">Daten importieren</button>
+        <input id="import-file-input" type="file" accept=".csv,.xlsx,.xlsm,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" hidden>
+      </div>
+      <div id="import-result" aria-live="polite"></div>
     </div>
   `;
 }
@@ -1056,6 +1216,7 @@ function bindSettingsForm(section) {
   });
   const form = document.getElementById("settings-form");
   if (!form) return;
+  bindConditionalFields(form);
   form.addEventListener("submit", async event => {
     event.preventDefault();
     const values = collectSettingsValues(form);
@@ -1067,6 +1228,24 @@ function bindSettingsForm(section) {
     } catch (error) {
       notify(error.message || String(error), "error");
     }
+  });
+}
+
+function bindConditionalFields(scope) {
+  scope.querySelectorAll("[data-show-when]").forEach(field => {
+    const [name, expected] = String(field.dataset.showWhen || "").split(":");
+    const control = scope.elements?.[name];
+    if (!name || !control) return;
+    const inputs = [...field.querySelectorAll("input, select, textarea, button")];
+    const update = () => {
+      const visible = String(control.value) === expected;
+      field.hidden = !visible;
+      inputs.forEach(input => {
+        input.disabled = !visible;
+      });
+    };
+    control.addEventListener("change", update);
+    update();
   });
 }
 
@@ -1129,7 +1308,7 @@ function openResetDialog() {
       const result = await api("reset_application", { mode });
       document.body.classList.toggle("dark", result.settings.darkmode === "1");
       close();
-      state.settingsDetailKey = mode === "all" ? "setup" : "work";
+      state.settingsDetailKey = mode === "all" ? "start" : "work";
       state.entryEditDate = null;
       state.calendarDetailDate = null;
       state.dashboardDetailKey = null;
@@ -1163,6 +1342,27 @@ function balanceMetric(label, value, status, signedValue = null) {
     <strong class="${valueClass}">${escapeHtml(value)}</strong>
     <small class="balance-card-status">${escapeHtml(status?.label || "0 bis 45 Stunden")}</small>
   </article>`;
+}
+
+function absenceCountdownValue(nextAbsence) {
+  if (!nextAbsence?.date) return "Keine";
+  return `${numberDe(nextAbsence.display_days)} ${nextAbsence.display_days === 1 ? "Tag" : "Tage"}`;
+}
+
+function absenceCountdownDetail(nextAbsence) {
+  if (!nextAbsence?.date) {
+    return detailText("Es ist keine zukünftige Abwesenheit eingetragen.", "muted");
+  }
+  return [
+    detailRow("Anzeige", `${numberDe(nextAbsence.display_days)} ${nextAbsence.display_label}`),
+    detailRow("Kalendertage", `${numberDe(nextAbsence.calendar_days)} ${nextAbsence.calendar_days === 1 ? "Tag" : "Tage"}`),
+    detailRow("Arbeitstage", `${numberDe(nextAbsence.workdays)} ${nextAbsence.workdays === 1 ? "Tag" : "Tage"}`),
+    detailRow("Typ", `${categoryLabel(nextAbsence.type)}${nextAbsence.half_day ? " · halber Tag" : ""}`),
+    detailRow("Beginn", nextAbsence.start_date),
+    detailRow("Ende", nextAbsence.end_date),
+    detailRow("Gezählte Abwesenheit", `${numberDe(nextAbsence.counted_days)} ${nextAbsence.counted_days === 1 ? "Tag" : "Tage"}`),
+    nextAbsence.note ? detailText(nextAbsence.note) : detailText("Keine Notiz hinterlegt.", "muted"),
+  ].join("");
 }
 
 function dashboardMetric(metricConfig) {
@@ -1294,6 +1494,35 @@ function isFutureDate(dateText) {
 
 function timeShort(value) {
   return value ? String(value).slice(0, 5) : "";
+}
+
+function entryRangeLabel(row) {
+  const start = timeShort(row.start) || "--:--";
+  const end = timeShort(row.end) || "läuft";
+  return `${start}–${end}`;
+}
+
+function weekdayShort(dateText) {
+  const date = new Date(`${dateText}T00:00:00`);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleDateString("de-DE", { weekday: "short" });
+}
+
+function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error("Datei konnte nicht gelesen werden."));
+    reader.onload = () => {
+      const bytes = new Uint8Array(reader.result);
+      const chunkSize = 0x8000;
+      let binary = "";
+      for (let index = 0; index < bytes.length; index += chunkSize) {
+        binary += String.fromCharCode(...bytes.subarray(index, index + chunkSize));
+      }
+      resolve(btoa(binary));
+    };
+    reader.readAsArrayBuffer(file);
+  });
 }
 
 function isoToday() {

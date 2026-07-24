@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 import calendar
 import logging
+import tempfile
 import threading
+import webbrowser
 from datetime import date as Date
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -23,8 +27,11 @@ from common.models import current_time_str, normalize_time_input, parse_date, to
 
 class WorktimeApi:
     def __init__(self, db_path: str | Path | None = None) -> None:
-        self.db_path = Path(db_path) if db_path else database.init_db()
-        database.init_db(self.db_path)
+        if db_path is None:
+            self.db_path = database.init_db()
+        else:
+            self.db_path = Path(db_path)
+            database.init_db(self.db_path)
         self._lock = threading.RLock()
         self.logger = logging.getLogger("worktime.app.api")
         self._window = None
@@ -36,12 +43,9 @@ class WorktimeApi:
     def dashboard(self) -> dict[str, Any]:
         with self._locked_conn() as conn:
             today = today_str()
-            stats_range = calculations.get_statistics_date_range(conn, Date.today().year)
-            if stats_range:
-                calculations.recalculate_range(conn, *stats_range)
+            settings = database.get_settings(conn)
             summary = calculations.recalculate_day(conn, today)
             segments = database.get_segments_for_date(conn, today)
-            settings = database.get_settings(conn)
             first_work = next((row["start_time"] for row in segments if row["type"] == "WORK"), "")
             ended_segments = [row["end_time"] for row in segments if row["end_time"]]
             last_end = ended_segments[-1] if ended_segments else ""
@@ -63,6 +67,7 @@ class WorktimeApi:
                     "label": flextime_status.label,
                 },
                 "remaining_vacation": calculations.get_remaining_vacation(conn, Date.today().year),
+                "next_absence": _next_absence_countdown(conn, today, settings),
                 "location": _display_location(summary.location),
                 "location_stats": calculations.get_location_statistics(conn, today),
                 "settings": _settings_for_ui(settings),
@@ -210,9 +215,12 @@ class WorktimeApi:
             calculations.recalculate_range(conn, start_date, end_date)
             summaries = database.get_day_summaries_between(conn, start_date, end_date)
             notes = database.get_notes_between(conn, start_date, end_date)
+            segments_by_date: dict[str, list[Any]] = {}
+            for segment in database.get_segments_between(conn, start_date, end_date):
+                segments_by_date.setdefault(segment["date"], []).append(segment)
             rows: list[dict[str, Any]] = []
             for summary in summaries:
-                segments = database.get_segments_for_date(conn, summary["date"])
+                segments = segments_by_date.get(summary["date"], [])
                 work_segments = [row for row in segments if row["type"] == "WORK"]
                 start = work_segments[0]["start_time"] if work_segments else ""
                 end_values = [row["end_time"] for row in work_segments if row["end_time"]]
@@ -318,10 +326,39 @@ class WorktimeApi:
             path = export.export_period(conn, start_date, end_date, export_format)
             return {"ok": True, "path": str(path), "name": path.name}
 
-    def close_month(self, year_month: str, closed: bool) -> dict[str, Any]:
-        with self._locked_conn() as conn:
-            calculations.close_month(conn, year_month, bool(closed))
-            return {"ok": True, "month": dict(database.get_month_closing(conn, year_month))}
+    def import_uploaded_file(self, file_name: str, payload_base64: str) -> dict[str, Any]:
+        suffix = Path(file_name or "").suffix.lower()
+        if suffix not in {".csv", ".xlsx", ".xlsm"}:
+            raise ValueError("Import unterstuetzt nur CSV oder Excel (.xlsx).")
+        try:
+            payload = base64.b64decode(payload_base64, validate=True)
+        except (binascii.Error, ValueError) as exc:
+            raise ValueError("Importdatei konnte nicht gelesen werden.") from exc
+        if not payload:
+            raise ValueError("Importdatei ist leer.")
+
+        tmp_path: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(prefix="worktime-import-", suffix=suffix, delete=False) as handle:
+                handle.write(payload)
+                tmp_path = Path(handle.name)
+            with self._locked_conn() as conn:
+                result = export.import_file(conn, tmp_path, source_name=Path(file_name).name)
+            return {"ok": True, "name": Path(file_name).name, **result}
+        finally:
+            if tmp_path:
+                try:
+                    tmp_path.unlink()
+                except FileNotFoundError:
+                    pass
+
+    def open_import_log(self, log_path: str) -> dict[str, Any]:
+        path = Path(log_path).expanduser().resolve()
+        log_root = export.IMPORT_LOG_DIR.resolve()
+        if path.parent != log_root or path.suffix.lower() != ".html" or not path.exists():
+            raise ValueError("Import-Protokoll konnte nicht geöffnet werden.")
+        webbrowser.open(path.as_uri())
+        return {"ok": True, "path": str(path)}
 
     def detect_location_now(self) -> dict[str, Any]:
         with self._locked_conn() as conn:
@@ -408,6 +445,56 @@ def _live_day_info(balance_minutes: int, target_minutes: int, open_segment, has_
     }
 
 
+def _next_absence_countdown(conn, today: str, settings: dict[str, str]) -> dict[str, Any] | None:
+    row = conn.execute(
+        """
+        SELECT * FROM day_types
+        WHERE date >= ?
+        ORDER BY date, type
+        LIMIT 1
+        """,
+        (today,),
+    ).fetchone()
+    if not row:
+        return None
+
+    relevant_date = parse_date(row["date"])
+    today_date = parse_date(today)
+    calendar_days = max(0, (relevant_date - today_date).days)
+    workdays = _workdays_until_absence(today_date, relevant_date, settings)
+    mode = settings.get("dashboard_absence_countdown_mode", "workdays")
+    display_days = calendar_days if mode == "calendar_days" else workdays
+    display_label = "Kalendertage" if mode == "calendar_days" else "Arbeitstage"
+    range_info = _expand_day_type_range(conn, dict(row))
+    return {
+        "date": row["date"],
+        "type": row["type"],
+        "half_day": bool(row["half_day"]),
+        "note": row["note"] or "",
+        "start_date": range_info["start_date"],
+        "end_date": range_info["end_date"],
+        "counted_days": range_info["counted_days"],
+        "calendar_days": calendar_days,
+        "workdays": workdays,
+        "display_days": display_days,
+        "display_label": display_label,
+        "display_mode": mode,
+    }
+
+
+def _workdays_until_absence(start: Date, absence_date: Date, settings: dict[str, str]) -> int:
+    if absence_date <= start:
+        return 0
+    total = 0
+    current = start
+    while current < absence_date:
+        holiday, _ = calculations.is_public_holiday(current, settings)
+        if not holiday and calculations.get_target_minutes_for_date(current, settings) > 0:
+            total += 1
+        current += timedelta(days=1)
+    return total
+
+
 def _settings_for_ui(settings: dict[str, str]) -> dict[str, str]:
     result = dict(settings)
     try:
@@ -425,6 +512,8 @@ def _settings_for_ui(settings: dict[str, str]) -> dict[str, str]:
     result["homeoffice_baseline_days"] = _setting_float_for_ui(result.get("homeoffice_baseline_days", "0"))
     result["office_start_buffer_minutes"] = _setting_int_for_ui(result.get("office_start_buffer_minutes", "0"))
     result["home_start_buffer_minutes"] = _setting_int_for_ui(result.get("home_start_buffer_minutes", "0"))
+    result["office_end_buffer_minutes"] = _setting_int_for_ui(result.get("office_end_buffer_minutes", "0"))
+    result["home_end_buffer_minutes"] = _setting_int_for_ui(result.get("home_end_buffer_minutes", "0"))
     return result
 
 
@@ -447,6 +536,8 @@ def _normalize_settings_input(values: dict[str, Any]) -> dict[str, str]:
     for key, label in (
         ("office_start_buffer_minutes", "Startpuffer Büro"),
         ("home_start_buffer_minutes", "Startpuffer Homeoffice"),
+        ("office_end_buffer_minutes", "Arbeitsende-Puffer Büro"),
+        ("home_end_buffer_minutes", "Arbeitsende-Puffer Homeoffice"),
     ):
         if key in normalized:
             normalized[key] = _normalize_nonnegative_int(normalized[key], label)
@@ -474,6 +565,21 @@ def _normalize_settings_input(values: dict[str, Any]) -> dict[str, str]:
     ):
         if key in normalized:
             normalized[key] = _normalize_bool_setting(normalized[key])
+    for key, allowed in (
+        ("work_start_popup_mode", {"off", "on"}),
+        ("work_end_popup_mode", {"off", "open_only", "always"}),
+        ("work_popup_timing", {"startup", "work_end", "custom"}),
+        ("daily_info_popup_mode", {"off", "work_end", "custom"}),
+        ("dashboard_absence_countdown_mode", {"workdays", "calendar_days"}),
+    ):
+        if key in normalized:
+            normalized[key] = _normalize_choice_setting(normalized[key], allowed, key)
+    for key, label in (
+        ("work_popup_custom_time", "Popup-Uhrzeit"),
+        ("daily_info_popup_time", "Info-Popup-Uhrzeit"),
+    ):
+        if key in normalized and normalized[key]:
+            normalized[key] = normalize_time_input(normalized[key])[:5]
     return normalized
 
 
@@ -485,6 +591,13 @@ def _apply_autostart_setting(enabled: bool) -> None:
 
 def _normalize_bool_setting(value: str) -> str:
     return "1" if str(value).strip().lower() in {"1", "true", "ja", "yes", "on"} else "0"
+
+
+def _normalize_choice_setting(value: str, allowed: set[str], label: str) -> str:
+    cleaned = str(value or "").strip()
+    if cleaned not in allowed:
+        raise ValueError(f"Ungültige Einstellung für {label}.")
+    return cleaned
 
 
 def _normalize_workday_weekdays(raw_value: str) -> list[int]:

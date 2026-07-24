@@ -59,6 +59,32 @@ def test_neutral_vacation_day_without_segments(tmp_path):
     assert calculations.get_remaining_vacation(conn, 2026) == 29
 
 
+def test_flextime_day_deducts_target_without_break_time(tmp_path):
+    conn = make_conn(tmp_path)
+    database.set_settings(conn, {"daily_break_minutes": "45"})
+    database.upsert_day_type(conn, "2026-07-07", "GLEITZEITTAG")
+
+    result = calculations.recalculate_day(conn, "2026-07-07")
+
+    assert result.day_category == "FLEXTIME"
+    assert result.target_minutes == 480
+    assert result.actual_minutes == 0
+    assert result.break_minutes == 0
+    assert result.balance_minutes == -480
+    assert calculations.get_flextime_balance(conn, "2026-07-07") == -480
+
+
+def test_half_flextime_day_deducts_half_target_without_segments(tmp_path):
+    conn = make_conn(tmp_path)
+    database.upsert_day_type(conn, "2026-07-07", "GLEITZEITTAG", half_day=True)
+
+    result = calculations.recalculate_day(conn, "2026-07-07")
+
+    assert result.target_minutes == 480
+    assert result.actual_minutes == 240
+    assert result.balance_minutes == -240
+
+
 def test_half_day_vacation_credits_half_target_when_worked(tmp_path):
     conn = make_conn(tmp_path)
     database.upsert_day_type(conn, "2026-07-08", "URLAUB", half_day=True)
@@ -225,6 +251,60 @@ def test_explicit_break_longer_than_configured_is_counted(tmp_path):
     assert result.actual_minutes == 450
     assert result.break_minutes == 90
     assert result.balance_minutes == -18
+
+
+def test_absence_segment_deducts_from_balance_and_configured_break_still_applies(tmp_path):
+    conn = make_conn(tmp_path)
+    database.set_settings(conn, {"daily_break_minutes": "45"})
+    database.add_segment(conn, "2026-07-06", "WORK", "06:50:00", "10:00:00", "OFFICE")
+    database.add_segment(conn, "2026-07-06", "ABSENCE", "10:00:00", "11:00:00")
+    database.add_segment(conn, "2026-07-06", "WORK", "11:00:00", "16:00:00", "OFFICE")
+
+    result = calculations.recalculate_day(conn, "2026-07-06")
+
+    assert result.target_minutes == 480
+    assert result.actual_minutes == 445
+    assert result.break_minutes == 45
+    assert result.balance_minutes == -35
+
+
+def test_overlapping_work_segments_are_not_counted_twice(tmp_path):
+    conn = make_conn(tmp_path)
+    database.add_segment(conn, "2026-07-06", "WORK", "08:00:00", "12:00:00", "OFFICE")
+    database.add_segment(conn, "2026-07-06", "WORK", "10:00:00", "14:00:00", "OFFICE")
+
+    result = calculations.recalculate_day(conn, "2026-07-06")
+
+    assert result.actual_minutes == 360
+    assert result.balance_minutes == -120
+
+
+def test_break_and_absence_inside_work_segment_are_cut_out(tmp_path):
+    conn = make_conn(tmp_path)
+    database.add_segment(conn, "2026-07-06", "WORK", "06:50:00", "15:46:00", "HOME")
+    database.add_segment(conn, "2026-07-06", "BREAK", "10:00:00", "10:50:00")
+    database.add_segment(conn, "2026-07-06", "WORK", "10:50:00", "14:46:00", "HOME")
+    database.add_segment(conn, "2026-07-06", "ABSENCE", "14:46:00", "15:46:00")
+    database.add_segment(conn, "2026-07-06", "WORK", "15:46:00", "15:48:00", "HOME")
+
+    result = calculations.recalculate_day(conn, "2026-07-06")
+
+    assert result.actual_minutes == 428
+    assert result.break_minutes == 50
+    assert result.balance_minutes == -52
+
+
+def test_absence_only_day_deducts_target_without_break_time(tmp_path):
+    conn = make_conn(tmp_path)
+    database.set_settings(conn, {"daily_break_minutes": "45"})
+    database.add_segment(conn, "2026-07-06", "ABSENCE", "08:00:00", "16:00:00")
+
+    result = calculations.recalculate_day(conn, "2026-07-06")
+
+    assert result.target_minutes == 480
+    assert result.actual_minutes == 0
+    assert result.break_minutes == 0
+    assert result.balance_minutes == -480
 
 
 def test_selected_workdays_drive_daily_target(tmp_path):

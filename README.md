@@ -5,7 +5,7 @@
 
 Python Worktime Tracker is a private, local-first work time tracking application designed for personal use. It automatically records work sessions, manages breaks and absences, calculates flex time, vacation balances, and working hours, and provides detailed statistics through a modern desktop interface.
 
-The application consists of a lightweight background tracker and a separate desktop application. All data is stored locally in a single SQLite database—no cloud services, web server, or internet connection are required.
+The application consists of a lightweight background tracker and a separate desktop application. All data is stored locally in a single SQLite database; no account, cloud service, web server, or internet connection is required.
 
 Features
 
@@ -15,7 +15,7 @@ Features
 * Flex time and overtime calculation
 * Vacation, sick leave, public holiday, and business trip management
 * Dashboard, calendar, list view, and statistics
-* Excel, CSV, and PDF export
+* Detailed Excel, CSV, and PDF export with CSV/Excel re-import
 * Manual database backups
 * Searchable HTML diagnostic log
 * Offline-first and privacy-focused
@@ -27,7 +27,7 @@ Features
 
 Python Worktime Tracker ist eine private, vollständig lokal arbeitende Arbeitszeiterfassung für den persönlichen Gebrauch. Die Anwendung erfasst Arbeitszeiten automatisch, verwaltet Pausen und Abwesenheiten, berechnet Gleitzeit, Urlaub und Arbeitszeiten und stellt alle Informationen übersichtlich in einer modernen Desktop-Anwendung dar.
 
-Das Projekt besteht aus einem ressourcenschonenden Hintergrunddienst sowie einer separaten Desktop-Anwendung. Sämtliche Daten werden ausschließlich lokal in einer SQLite-Datenbank gespeichert – ohne Cloud, Webserver oder Internetverbindung.
+Das Projekt besteht aus einem ressourcenschonenden Hintergrunddienst sowie einer separaten Desktop-Anwendung. Sämtliche Daten werden lokal in einer SQLite-Datenbank gespeichert; Konto, Cloud, Webserver oder Internetverbindung sind nicht nötig.
 
 Funktionen
 
@@ -37,7 +37,7 @@ Funktionen
 * Berechnung von Gleitzeit und Überstunden
 * Verwaltung von Urlaub, Krankheit, Feiertagen und Dienstreisen
 * Dashboard, Kalender-, Listen- und Statistikansicht
-* Export nach Excel, CSV und PDF
+* Detaillierter Export nach Excel, CSV und PDF mit CSV/Excel-Reimport
 * Manuelle Datenbank-Backups
 * Durchsuchbares HTML-Diagnoseprotokoll
 * Offline-First und datenschutzfreundlich

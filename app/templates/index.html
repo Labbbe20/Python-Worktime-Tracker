@@ -22,15 +22,17 @@
           <small>Lokal & privat</small>
         </div>
       </div>
-      <nav class="nav">
-        <button data-view="dashboard" class="active">🏠 Dashboard</button>
-        <button data-view="calendar">📅 Kalender</button>
-        <button data-view="entries">📝 Einträge</button>
-        <button data-view="statistics">📊 Statistiken</button>
-        <button data-view="vacation">🏖 Urlaub und Abwesenheiten</button>
-        <button data-view="settings">⚙ Einstellungen</button>
+      <nav class="nav nav-primary">
+        <button data-view="dashboard" class="active nav-dashboard" title="Dashboard" aria-label="Dashboard"><span class="nav-icon" aria-hidden="true"><svg width="22" height="22" viewBox="0 0 24 24"><path d="M3 11.5 12 4l9 7.5"/><path d="M5 10.5V20h14v-9.5"/><path d="M9 20v-6h6v6"/></svg></span><span class="nav-label">Dashboard</span></button>
+        <button data-view="calendar" class="nav-calendar" title="Kalender" aria-label="Kalender"><span class="nav-icon" aria-hidden="true"><svg width="22" height="22" viewBox="0 0 24 24"><path d="M7 3v4M17 3v4"/><rect x="4" y="5" width="16" height="16" rx="2"/><path d="M4 10h16"/><path d="M8 14h3M13 14h3M8 17h3"/></svg></span><span class="nav-label">Kalender</span></button>
+        <button data-view="entries" class="nav-entries" title="Einträge" aria-label="Einträge"><span class="nav-icon" aria-hidden="true"><svg width="22" height="22" viewBox="0 0 24 24"><path d="M8 6h12M8 12h12M8 18h12"/><path d="M4 6h.01M4 12h.01M4 18h.01"/></svg></span><span class="nav-label">Einträge</span></button>
+        <button data-view="statistics" class="nav-statistics" title="Statistiken" aria-label="Statistiken"><span class="nav-icon" aria-hidden="true"><svg width="22" height="22" viewBox="0 0 24 24"><path d="M4 20h16"/><rect x="6" y="11" width="3" height="6" rx="1"/><rect x="11" y="7" width="3" height="10" rx="1"/><rect x="16" y="4" width="3" height="13" rx="1"/></svg></span><span class="nav-label">Statistiken</span></button>
+        <button data-view="vacation" class="nav-vacation" title="Urlaub und Abwesenheiten" aria-label="Urlaub und Abwesenheiten"><span class="nav-icon" aria-hidden="true"><svg width="22" height="22" viewBox="0 0 24 24"><path d="M10 20h8a2 2 0 0 0 2-2V9H4v9a2 2 0 0 0 2 2h1"/><path d="M8 9V7a4 4 0 0 1 8 0v2"/><path d="M8 14h8"/></svg></span><span class="nav-label">Urlaub und Abwesenheiten</span></button>
       </nav>
-      <button id="refresh-view" class="sidebar-refresh" type="button">↻ Aktualisieren</button>
+      <nav class="nav nav-bottom">
+        <button data-view="settings" class="nav-settings" title="Einstellungen" aria-label="Einstellungen"><span class="nav-icon" aria-hidden="true"><svg width="22" height="22" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.9 4.9 7 7M17 17l2.1 2.1M2 12h3M19 12h3M4.9 19.1 7 17M17 7l2.1-2.1"/></svg></span><span class="nav-label">Einstellungen</span></button>
+        <button id="refresh-view" class="sidebar-refresh nav-refresh" type="button" title="Aktualisieren" aria-label="Aktualisieren"><span class="nav-icon" aria-hidden="true"><svg width="22" height="22" viewBox="0 0 24 24"><path d="M20 6v5h-5"/><path d="M4 18v-5h5"/><path d="M19 11a7 7 0 0 0-12-4l-3 3"/><path d="M5 13a7 7 0 0 0 12 4l3-3"/></svg></span><span class="nav-label">Aktualisieren</span></button>
+      </nav>
     </aside>
     <main class="content" id="content" tabindex="-1">
       <section class="loading">Lade Arbeitszeitdaten …</section>

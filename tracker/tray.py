@@ -11,6 +11,7 @@ from pathlib import Path
 from app.instance import another_instance_is_running, request_app_view
 from common import database
 from common.config import LOG_DIR, PROJECT_ROOT
+from tracker import popups
 from tracker.notify import NotificationCenter
 from tracker.recorder import RecorderEvent, WorktimeRecorder
 
@@ -48,7 +49,8 @@ def run_tray(recorder: WorktimeRecorder, notifier: NotificationCenter, logger: l
             event_message(recorder.start_absence())
 
     def action_end_day(icon, item) -> None:
-        event_message(recorder.end_day())
+        event_message(popups.end_day_with_optional_popup(recorder))
+        popups.show_info_popup_on_work_end(recorder, notifier)
 
     def launch_app(view: str | None = None) -> None:
         if another_instance_is_running():

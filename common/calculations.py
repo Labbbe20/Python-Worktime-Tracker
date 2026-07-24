@@ -18,7 +18,7 @@ from .balance import (
     is_before_tracking_start,
 )
 from .config import DEFAULT_SETTINGS, normalize_state_code
-from .models import minutes_between, parse_date
+from .models import minutes_between, parse_date, parse_time
 
 
 DAY_TYPE_PRIORITY = ["URLAUB", "KRANK", "FEIERTAG", "GLEITZEITTAG", "DIENSTREISE"]
@@ -29,6 +29,7 @@ DAY_CATEGORY_BY_TYPE = {
     "GLEITZEITTAG": "FLEXTIME",
     "DIENSTREISE": "TRAVEL",
 }
+_HOLIDAY_CACHE: dict[tuple[str, int], Any] = {}
 
 
 @dataclass(frozen=True)
@@ -96,18 +97,21 @@ def is_public_holiday(date_value: str | Date, settings: Mapping[str, str]) -> tu
     state = normalize_state_code(settings.get("bundesland", ""))
     if not state:
         return False, None
-    try:
-        import holidays  # type: ignore
-    except ImportError:
-        return False, None
-
-    try:
-        holiday_map = holidays.country_holidays("DE", subdiv=state, years=[day.year])
-    except Exception:
+    cache_key = (state, day.year)
+    holiday_map = _HOLIDAY_CACHE.get(cache_key)
+    if holiday_map is None:
         try:
-            holiday_map = holidays.Germany(state=state, years=[day.year])
-        except Exception:
+            import holidays  # type: ignore
+        except ImportError:
             return False, None
+        try:
+            holiday_map = holidays.country_holidays("DE", subdiv=state, years=[day.year])
+        except Exception:
+            try:
+                holiday_map = holidays.Germany(state=state, years=[day.year])
+            except Exception:
+                return False, None
+        _HOLIDAY_CACHE[cache_key] = holiday_map
     if day in holiday_map:
         return True, str(holiday_map[day])
     return False, None
@@ -140,12 +144,17 @@ def compute_day(
     holiday, holiday_name = is_public_holiday(day, settings)
     explicit_type = _primary_day_type(day_type_rows)
 
-    gross_work_minutes = _sum_segment_minutes(date_value, segment_rows, "WORK", now)
-    explicit_break_minutes = _sum_segment_minutes(date_value, segment_rows, "BREAK", now)
-    auto_break_minutes = _auto_break_minutes(gross_work_minutes, explicit_break_minutes, settings)
-    work_minutes = max(0, gross_work_minutes - auto_break_minutes)
+    work_intervals = _merged_intervals(_segment_intervals(date_value, segment_rows, "WORK", now))
+    break_intervals = _merged_intervals(_segment_intervals(date_value, segment_rows, "BREAK", now))
+    absence_intervals = _merged_intervals(_segment_intervals(date_value, segment_rows, "ABSENCE", now))
+    worked_intervals = _subtract_intervals(work_intervals, _merged_intervals([*break_intervals, *absence_intervals]))
+
+    explicit_break_minutes = _interval_minutes(break_intervals)
+    work_minutes_before_auto_break = _interval_minutes(worked_intervals)
+    auto_break_minutes = _auto_break_minutes(work_minutes_before_auto_break, explicit_break_minutes, settings)
+    work_minutes = max(0, work_minutes_before_auto_break - auto_break_minutes)
     break_minutes = explicit_break_minutes + auto_break_minutes
-    has_real_work = gross_work_minutes > 0
+    has_real_work = work_minutes_before_auto_break > 0
     location = _aggregate_location(_row_get(row, "location") for row in segment_rows if _row_get(row, "type") == "WORK")
 
     if explicit_type == "FEIERTAG" or holiday:
@@ -154,7 +163,11 @@ def compute_day(
         target_minutes = base_target
 
     neutral_credit = 0
-    if explicit_type and explicit_type != "FEIERTAG":
+    if explicit_type == "GLEITZEITTAG":
+        primary_row = next(row for row in day_type_rows if _row_get(row, "type") == explicit_type)
+        if bool(_row_get(primary_row, "half_day")) and not has_real_work:
+            neutral_credit = target_minutes // 2
+    elif explicit_type and explicit_type != "FEIERTAG":
         primary_row = next(row for row in day_type_rows if _row_get(row, "type") == explicit_type)
         if not has_real_work:
             # Documented assumption: a standalone full or half special day is neutral.
@@ -273,11 +286,6 @@ def recalculate_month(conn, year_month: str) -> None:
     )
 
 
-def close_month(conn, year_month: str, closed: bool = True) -> None:
-    recalculate_month(conn, year_month)
-    database.set_month_closed(conn, year_month, closed)
-
-
 def get_flextime_balance(conn, through_date: str | None = None) -> int:
     settings = database.get_settings(conn)
     initial = get_initial_flextime_minutes(settings)
@@ -298,17 +306,6 @@ def get_flextime_balance(conn, through_date: str | None = None) -> int:
     return initial + int(row["total"] or 0)
 
 
-def get_flextime_status(conn, through_date: str | None = None) -> dict[str, str]:
-    minutes = get_flextime_balance(conn, through_date)
-    status = classify_balance(minutes)
-    return {
-        "key": status.key,
-        "class": status.css_class,
-        "label": status.label,
-        "hours": format_minutes_as_decimal_hours(minutes),
-    }
-
-
 def get_day_type_days(conn, year: int, day_type: str, start_date: str | None = None, end_date: str | None = None) -> float:
     params: list[Any] = [str(year), day_type]
     sql = "SELECT date, half_day FROM day_types WHERE substr(date, 1, 4) = ? AND type = ?"
@@ -322,7 +319,7 @@ def get_day_type_days(conn, year: int, day_type: str, start_date: str | None = N
     settings = _settings_with_effective_tracking_start(conn)
     total = 0.0
     for row in rows:
-        if day_type in {"URLAUB", "KRANK"} and not _counts_as_absence_day(conn, row["date"], settings):
+        if day_type in {"URLAUB", "KRANK", "GLEITZEITTAG"} and not _counts_as_absence_day(conn, row["date"], settings):
             continue
         total += 0.5 if row["half_day"] else 1.0
     return total
@@ -507,8 +504,13 @@ def _counts_as_absence_day(conn, date_value: str, settings: Mapping[str, str]) -
     return explicit_holiday is None
 
 
-def _sum_segment_minutes(date_value: str, segments: Iterable[Mapping[str, Any]], segment_type: str, now: datetime) -> int:
-    total = 0
+def _segment_intervals(
+    date_value: str,
+    segments: Iterable[Mapping[str, Any]],
+    segment_type: str,
+    now: datetime,
+) -> list[tuple[int, int]]:
+    intervals: list[tuple[int, int]] = []
     for row in segments:
         if _row_get(row, "type") != segment_type:
             continue
@@ -518,8 +520,56 @@ def _sum_segment_minutes(date_value: str, segments: Iterable[Mapping[str, Any]],
                 end_time = now.strftime("%H:%M:%S")
             else:
                 continue
-        total += minutes_between(date_value, _row_get(row, "start_time"), end_time)
-    return total
+        start_minute = _minute_of_day(_row_get(row, "start_time"))
+        end_minute = _minute_of_day(end_time)
+        if end_minute > start_minute:
+            intervals.append((start_minute, end_minute))
+    return intervals
+
+
+def _minute_of_day(value: str) -> int:
+    parsed = parse_time(value)
+    return parsed.hour * 60 + parsed.minute
+
+
+def _merged_intervals(intervals: Iterable[tuple[int, int]]) -> list[tuple[int, int]]:
+    ordered = sorted(intervals)
+    merged: list[tuple[int, int]] = []
+    for start, end in ordered:
+        if not merged or start > merged[-1][1]:
+            merged.append((start, end))
+        else:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+    return merged
+
+
+def _subtract_intervals(
+    intervals: Iterable[tuple[int, int]],
+    blockers: Iterable[tuple[int, int]],
+) -> list[tuple[int, int]]:
+    result: list[tuple[int, int]] = []
+    blocker_list = _merged_intervals(blockers)
+    for start, end in intervals:
+        parts = [(start, end)]
+        for block_start, block_end in blocker_list:
+            next_parts: list[tuple[int, int]] = []
+            for part_start, part_end in parts:
+                if block_end <= part_start or block_start >= part_end:
+                    next_parts.append((part_start, part_end))
+                    continue
+                if block_start > part_start:
+                    next_parts.append((part_start, min(block_start, part_end)))
+                if block_end < part_end:
+                    next_parts.append((max(block_end, part_start), part_end))
+            parts = next_parts
+            if not parts:
+                break
+        result.extend(parts)
+    return result
+
+
+def _interval_minutes(intervals: Iterable[tuple[int, int]]) -> int:
+    return sum(max(0, end - start) for start, end in intervals)
 
 
 def _aggregate_location(values: Iterable[str | None]) -> str | None:

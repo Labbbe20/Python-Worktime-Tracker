@@ -49,7 +49,7 @@ class WorktimeRecorder:
                 "id": current["id"],
             }
 
-    def auto_start_day(self) -> RecorderEvent | None:
+    def preview_auto_start_day(self) -> RecorderEvent | None:
         today = today_str()
         with self._lock, self._connect() as conn:
             settings = database.get_settings(conn)
@@ -62,10 +62,35 @@ class WorktimeRecorder:
             ).fetchone()
             if open_today:
                 return None
-        return self.start_work(source="AUTO", reason="Arbeitsbeginn automatisch erfasst")
+            detected = self._detect_location(conn, settings)
+            planned_time = _start_time_with_buffer(current_time_str(), "AUTO", detected, settings)
+            return RecorderEvent(
+                "WORK_START_PLAN",
+                "Arbeitsbeginn automatisch geplant",
+                planned_time,
+                today,
+                location=detected,
+            )
 
-    def start_work(self, source: str = "MANUAL", reason: str = "Arbeitsbeginn") -> RecorderEvent | None:
-        now = current_time_str()
+    def auto_start_day(self, at_time: str | None = None) -> RecorderEvent | None:
+        plan = self.preview_auto_start_day()
+        if not plan:
+            return None
+        return self.start_work(
+            source="AUTO",
+            reason="Arbeitsbeginn automatisch erfasst",
+            at_time=at_time or plan.time,
+            location_override=plan.location,
+        )
+
+    def start_work(
+        self,
+        source: str = "MANUAL",
+        reason: str = "Arbeitsbeginn",
+        at_time: str | None = None,
+        location_override: str | None = None,
+    ) -> RecorderEvent | None:
+        now = normalize_time_input(at_time) if at_time else current_time_str()
         today = today_str()
         with self._lock, self._connect() as conn:
             current = database.get_current_open_segment(conn)
@@ -76,8 +101,8 @@ class WorktimeRecorder:
                 calculations.recalculate_day(conn, current["date"])
 
             settings = database.get_settings(conn)
-            detected = self._detect_location(conn, settings)
-            start_time = _start_time_with_buffer(now, source, detected, settings)
+            detected = location_override or self._detect_location(conn, settings)
+            start_time = now if at_time else _start_time_with_buffer(now, source, detected, settings)
             segment_id = database.add_segment(conn, today, "WORK", start_time, location=detected, source=source)
             calculations.recalculate_day(conn, today)
             self.logger.info("%s um %s, Standort %s", reason, start_time, detected)
@@ -101,20 +126,26 @@ class WorktimeRecorder:
             current = database.get_current_open_segment(conn)
             if not current:
                 return None
-            database.close_segment(conn, current["id"], now)
+            settings = database.get_settings(conn)
+            detected_location = current["location"] or self._existing_day_location(conn, current["date"])
+            end_time = now if at_time else _end_time_with_buffer(now, source, detected_location or "HOME", settings)
+            database.close_segment(conn, current["id"], end_time)
             calculations.recalculate_day(conn, current["date"])
             if source == "AUTO_SHUTDOWN":
                 database.set_setting(
                     conn,
                     "last_auto_shutdown_notice",
-                    json.dumps({"date": current["date"], "time": now}, ensure_ascii=False),
+                    json.dumps({"date": current["date"], "time": end_time}, ensure_ascii=False),
                 )
-            self.logger.info("%s um %s fuer %s", reason, now, current["date"])
-            return RecorderEvent("END_DAY", reason, now, current["date"], segment_id=current["id"])
+            self.logger.info("%s um %s fuer %s", reason, end_time, current["date"])
+            return RecorderEvent("END_DAY", reason, end_time, current["date"], segment_id=current["id"])
 
     def recover_previous_open_segments(
         self,
         ask_end_time: Callable[[dict], str | None],
+        *,
+        allow_prompt: bool = True,
+        prefer_prompt: bool = False,
     ) -> list[RecorderEvent]:
         recovered: list[RecorderEvent] = []
         today = today_str()
@@ -123,6 +154,11 @@ class WorktimeRecorder:
             automatic_recovery_enabled = _setting_enabled(settings, "automatic_recovery_enabled")
             open_segments = [row for row in database.get_open_segments(conn) if row["date"] < today]
             for row in open_segments:
+                if prefer_prompt and allow_prompt:
+                    event = self._recover_open_segment_with_prompt(conn, row, ask_end_time)
+                    if event:
+                        recovered.append(event)
+                        continue
                 automatic_end_time = self._heartbeat_recovery_end_time(conn, row) if automatic_recovery_enabled else None
                 if automatic_end_time:
                     database.close_segment(conn, row["id"], automatic_end_time)
@@ -138,23 +174,90 @@ class WorktimeRecorder:
                     self.logger.info("Automatische Recovery fuer %s um %s", row["date"], automatic_end_time)
                     continue
 
-                end_time = ask_end_time(dict(row))
-                if not end_time:
-                    self.logger.warning("Offenes Segment %s bleibt unveraendert", row["id"])
+                if not allow_prompt:
+                    self.logger.warning("Offenes Segment %s bleibt wegen deaktiviertem Popup unveraendert", row["id"])
                     continue
-                normalized = normalize_time_input(end_time)
-                database.close_segment(conn, row["id"], normalized)
-                calculations.recalculate_day(conn, row["date"])
-                event = RecorderEvent(
-                    "RECOVERY",
-                    "Feierabend nach Absturz/Stromausfall nachgetragen",
-                    normalized,
-                    row["date"],
-                    segment_id=row["id"],
-                )
-                recovered.append(event)
-                self.logger.info("Crash-Recovery fuer %s um %s", row["date"], normalized)
+                event = self._recover_open_segment_with_prompt(conn, row, ask_end_time)
+                if event:
+                    recovered.append(event)
         return recovered
+
+    def _recover_open_segment_with_prompt(
+        self,
+        conn,
+        row,
+        ask_end_time: Callable[[dict], str | None],
+    ) -> RecorderEvent | None:
+        end_time = ask_end_time(dict(row))
+        if not end_time:
+            self.logger.warning("Offenes Segment %s bleibt unveraendert", row["id"])
+            return None
+        normalized = normalize_time_input(end_time)
+        database.close_segment(conn, row["id"], normalized)
+        calculations.recalculate_day(conn, row["date"])
+        event = RecorderEvent(
+            "RECOVERY",
+            "Feierabend nach Absturz/Stromausfall nachgetragen",
+            normalized,
+            row["date"],
+            segment_id=row["id"],
+        )
+        self.logger.info("Crash-Recovery fuer %s um %s", row["date"], normalized)
+        return event
+
+    def get_last_work_end_candidate(self) -> dict[str, str | int] | None:
+        with self._lock, self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT * FROM segments
+                WHERE type = 'WORK' AND end_time IS NOT NULL
+                ORDER BY date DESC, end_time DESC, id DESC
+                LIMIT 1
+                """
+            ).fetchone()
+            return dict(row) if row else None
+
+    def update_work_end_time(self, segment_id: int, end_time: str) -> RecorderEvent | None:
+        normalized = normalize_time_input(end_time)
+        with self._lock, self._connect() as conn:
+            row = database.get_segment(conn, int(segment_id))
+            if not row:
+                return None
+            database.close_segment(conn, int(segment_id), normalized)
+            calculations.recalculate_day(conn, row["date"])
+            return RecorderEvent(
+                "END_DAY_CORRECTION",
+                "Arbeitsende angepasst",
+                normalized,
+                row["date"],
+                segment_id=int(segment_id),
+            )
+
+    def day_information_text(self, date: str | None = None) -> str:
+        date = date or today_str()
+        with self._lock, self._connect() as conn:
+            summary = calculations.recalculate_day(conn, date)
+            segments = database.get_segments_for_date(conn, date)
+            absence_minutes = sum(
+                calculations.minutes_between(row["date"], row["start_time"], row["end_time"])
+                for row in segments
+                if row["type"] == "ABSENCE" and row["end_time"]
+            )
+            lines = [
+                f"Tagesstand {date}",
+                f"Arbeitszeit: {calculations.minutes_to_hhmm(summary.actual_minutes)}",
+                f"Pause: {calculations.minutes_to_hhmm(summary.break_minutes)}",
+                f"Soll: {calculations.minutes_to_hhmm(summary.target_minutes)}",
+                f"Saldo heute: {calculations.minutes_to_hhmm(summary.balance_minutes)}",
+            ]
+            if absence_minutes:
+                lines.append(f"Abwesenheit: {calculations.minutes_to_hhmm(absence_minutes)}")
+            if segments:
+                lines.extend(["", "Segmente:"])
+                for row in segments:
+                    end = row["end_time"][:5] if row["end_time"] else "läuft"
+                    lines.append(f"- {row['type']}: {row['start_time'][:5]} bis {end}")
+            return "\n".join(lines)
 
     def record_heartbeat(self, at: datetime | None = None) -> None:
         stamp = (at or datetime.now()).replace(microsecond=0).isoformat()
@@ -272,6 +375,24 @@ def _start_time_with_buffer(now: str, source: str, detected_location: str, setti
         return now
     hour, minute, second = [int(part) for part in now[:8].split(":")]
     total_seconds = max(0, hour * 3600 + minute * 60 + second - buffer_minutes * 60)
+    adjusted_hour = total_seconds // 3600
+    adjusted_minute = (total_seconds % 3600) // 60
+    adjusted_second = total_seconds % 60
+    return f"{adjusted_hour:02d}:{adjusted_minute:02d}:{adjusted_second:02d}"
+
+
+def _end_time_with_buffer(now: str, source: str, detected_location: str, settings: dict[str, str]) -> str:
+    if source != "AUTO_SHUTDOWN":
+        return now
+    key = "office_end_buffer_minutes" if detected_location == "OFFICE" else "home_end_buffer_minutes"
+    try:
+        buffer_minutes = max(0, int(settings.get(key, "0") or "0"))
+    except ValueError:
+        buffer_minutes = 0
+    if buffer_minutes <= 0:
+        return now
+    hour, minute, second = [int(part) for part in now[:8].split(":")]
+    total_seconds = min((24 * 3600) - 1, hour * 3600 + minute * 60 + second + buffer_minutes * 60)
     adjusted_hour = total_seconds // 3600
     adjusted_minute = (total_seconds % 3600) // 60
     adjusted_second = total_seconds % 60

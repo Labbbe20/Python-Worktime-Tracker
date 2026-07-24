@@ -7,7 +7,7 @@ Private, lokale Arbeitszeiterfassung mit drei Bereichen:
 - `app/`: lokale pywebview-Desktop-App für Dashboard, Kalender, Einträge, Statistiken, Urlaub/Abwesenheiten, Einstellungen, Backup und Export.
 - `common/`: gemeinsame SQLite-Datenbank, Berechnungs-Engine, Standortcheck, HTML-Diagnose-Log und Export.
 
-Es gibt keinen Server, keinen offenen Port, keine Cloud und kein automatisches Backup. Alle Daten liegen lokal in `data/database.db`. In der Windows-Exe liegt der Datenordner neben der Exe.
+Die Nutzung braucht keinen Server, keinen offenen Port, keine Cloud und kein Konto. Alle Daten liegen lokal in `data/database.db`. In der Windows-Exe liegt der Datenordner neben der Exe.
 
 ## Für normale Nutzung unter Windows
 
@@ -115,6 +115,7 @@ Hinweis Windows: pywebview nutzt üblicherweise Microsoft Edge WebView2. Auf akt
 - Die Officequote im Dashboard zählt getrackte Büro-/Homeoffice-Tage plus manuelle Nachtragswerte. Gemischte Tage zählen jeweils halb zu Büro und Homeoffice.
 - Die gebündelte Windows-Exe und die App verwenden `app/static/icons/app.ico` als Symbol.
 - Backups werden ausschließlich manuell ausgelöst und lokal in `data/backups/` abgelegt.
+- Exporte enthalten Rohdaten (`SEGMENT`, `ABWESENHEIT`, `NOTIZ`) plus berechnete Tages-Summen. Excel-Dateien öffnen zuerst mit dem lesbaren Blatt `Übersicht`; die Detailblätter und `Importdaten` bleiben importierbar. Als Bezug gilt das Datum, technische Datenbank-IDs werden in neuen Exporten nicht benötigt. CSV- und Excel-Dateien aus diesem Export können über `Backup & Export` wieder importiert werden; Tages-Summen werden beim Import ignoriert und anschließend neu berechnet.
 
 ## Bedienung
 
@@ -148,6 +149,8 @@ In der App unter `Einstellungen` sind die Optionen in aufklappbare Kacheln grupp
 - Standort-Ziele, z. B. `intranet.firma.local`, `intranet.firma.local:443` oder `https://intranet.firma.local`
 - Timeout in Millisekunden
 - Startpuffer je Standort: Büro und Homeoffice können beim automatischen Arbeitsbeginn um eine feste Minutenanzahl vorverlegt werden
+- Arbeitsende-Puffer je Standort: Büro und Homeoffice können beim automatischen Feierabend um Minuten nach hinten verschoben werden
+- Popup-Regeln für Arbeitsbeginn, Arbeitsende und Tagesinfo
 - Darkmode
 
 `Zurücksetzen` öffnet einen Dialog mit drei Optionen: nur Einstellungen zurücksetzen, nur Trackingdaten löschen oder alles zurücksetzen. Beim vollständigen Reset wird danach einmalig die Ersteinrichtung mit Startwerten für Urlaub, Gleitzeit und Officequote geöffnet.
@@ -209,11 +212,11 @@ Getestet werden Datenbank-/Berechnungslogik, Pausenzeit/Arbeitstage, Startdatum/
 11. Dashboard und Statistiken prüfen: Gleitzeitstand soll als Badge grün/orange/rot erscheinen, Dashboard-Kacheln sollen Details aufklappen.
 12. Dashboard `Officequote` prüfen: Büroanteil soll mit Details zu Büro, Homeoffice, getrackten und manuellen Tagen aufklappen.
 13. Im Kalender prüfen, dass links die Kalenderwochen stehen; dann einen Tag öffnen, Segmentzeiten ändern, Standort korrigieren und Notiz speichern.
-14. In `Einträge` eine Zeile über `Bearbeiten` öffnen, Segment ändern/löschen und prüfen, dass die Liste aktualisiert wird.
+14. In `Einträge` eine Zeile über `Details` öffnen, Segment ändern/löschen und prüfen, dass die Liste aktualisiert wird.
 15. Backup über App oder Tray auslösen und Datei in `data/backups/` prüfen.
 16. Diagnose-Log öffnen und Suche/Sortierung im Browser testen.
 17. In `Urlaub und Abwesenheiten` Urlaub, Gleitzeit, Krankheit, Dienstreise oder Feiertags-Ausnahme mit Notiz eintragen und prüfen, dass darunter Zeitraum, Notiz, angerechnete Arbeitstage und Entfernen-Aktion erscheinen.
-18. Export in CSV, Excel und PDF ausführen.
+18. Export in CSV, Excel und PDF ausführen; CSV oder Excel anschließend über `Daten importieren` testweise in eine Testdatenbank einlesen.
 19. Aus dem Tracker-Menü mehrmals `App öffnen`, `Urlaub und Abwesenheiten` und `Einstellungen` wählen. Es darf immer nur ein App-Fenster laufen.
 
 ### Windows Produktivtest
