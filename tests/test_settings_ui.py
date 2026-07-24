@@ -51,6 +51,15 @@ def test_api_saves_dashboard_absence_countdown_mode(tmp_path):
     assert result["settings"]["dashboard_absence_countdown_mode"] == "calendar_days"
 
 
+def test_api_saves_auto_refresh_interval(tmp_path):
+    db_path = tmp_path / "database.db"
+    api = WorktimeApi(db_path)
+
+    result = api.save_settings({"auto_refresh_interval_seconds": "300"})
+
+    assert result["settings"]["auto_refresh_interval_seconds"] == "300"
+
+
 def test_dashboard_reports_next_absence_countdown_with_workdays(tmp_path):
     db_path = tmp_path / "database.db"
     api = WorktimeApi(db_path)

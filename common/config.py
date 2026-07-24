@@ -51,6 +51,7 @@ DEFAULT_SETTINGS: dict[str, str] = {
     "automatic_recovery_enabled": "1",
     "auto_resume_after_break_enabled": "1",
     "auto_resume_after_absence_enabled": "1",
+    "auto_refresh_interval_seconds": "60",
     "work_start_popup_mode": "off",
     "work_end_popup_mode": "open_only",
     "work_popup_timing": "startup",

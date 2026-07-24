@@ -514,6 +514,7 @@ def _settings_for_ui(settings: dict[str, str]) -> dict[str, str]:
     result["home_start_buffer_minutes"] = _setting_int_for_ui(result.get("home_start_buffer_minutes", "0"))
     result["office_end_buffer_minutes"] = _setting_int_for_ui(result.get("office_end_buffer_minutes", "0"))
     result["home_end_buffer_minutes"] = _setting_int_for_ui(result.get("home_end_buffer_minutes", "0"))
+    result["auto_refresh_interval_seconds"] = _setting_int_for_ui(result.get("auto_refresh_interval_seconds", "60"))
     return result
 
 
@@ -541,6 +542,10 @@ def _normalize_settings_input(values: dict[str, Any]) -> dict[str, str]:
     ):
         if key in normalized:
             normalized[key] = _normalize_nonnegative_int(normalized[key], label)
+    if "auto_refresh_interval_seconds" in normalized:
+        normalized["auto_refresh_interval_seconds"] = _normalize_auto_refresh_interval(
+            normalized["auto_refresh_interval_seconds"]
+        )
     for key, label in (
         ("office_baseline_days", "Manuelle Büro-Tage"),
         ("homeoffice_baseline_days", "Manuelle Homeoffice-Tage"),
@@ -598,6 +603,22 @@ def _normalize_choice_setting(value: str, allowed: set[str], label: str) -> str:
     if cleaned not in allowed:
         raise ValueError(f"Ungültige Einstellung für {label}.")
     return cleaned
+
+
+def _normalize_auto_refresh_interval(raw_value: str) -> str:
+    if not raw_value:
+        return "0"
+    try:
+        value = int(raw_value)
+    except ValueError as exc:
+        raise ValueError("Aktualisierungsintervall muss eine ganze Zahl in Sekunden sein.") from exc
+    if value < 0:
+        raise ValueError("Aktualisierungsintervall darf nicht negativ sein.")
+    if 0 < value < 10:
+        raise ValueError("Aktualisierungsintervall muss mindestens 10 Sekunden betragen oder 0 zum Deaktivieren.")
+    if value > 3600:
+        raise ValueError("Aktualisierungsintervall darf maximal 3600 Sekunden betragen.")
+    return str(value)
 
 
 def _normalize_workday_weekdays(raw_value: str) -> list[int]:

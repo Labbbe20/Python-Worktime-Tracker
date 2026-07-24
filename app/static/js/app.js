@@ -9,6 +9,8 @@ const state = {
   entries: [],
   entriesSort: { key: "date", direction: -1 },
   statsChart: null,
+  dashboardData: null,
+  autoRefreshIntervalSeconds: 60,
 };
 
 const content = document.getElementById("content");
@@ -16,13 +18,15 @@ const toast = document.getElementById("toast");
 const shell = document.querySelector(".shell");
 let commandPollTimer = null;
 let autoRefreshTimer = null;
+let autoRefreshInFlight = false;
+let refreshFocusHandlerAttached = false;
 let chartLibraryPromise = null;
 
 document.querySelectorAll(".nav button[data-view]").forEach(button => {
   button.addEventListener("click", () => setView(button.dataset.view));
 });
 
-document.getElementById("refresh-view")?.addEventListener("click", () => render());
+document.getElementById("refresh-view")?.addEventListener("click", () => refreshCurrentView({ silent: state.view !== "settings" }));
 
 window.addEventListener("pywebviewready", async () => {
   syncNav();
@@ -30,7 +34,7 @@ window.addEventListener("pywebviewready", async () => {
   try {
     await render();
     startCommandPolling();
-    startAutoRefresh();
+    startAutoRefresh(settings);
     await checkInitialSetup(settings);
   } catch (error) {
     showError(error);
@@ -105,7 +109,31 @@ async function render() {
 
 async function renderDashboard() {
   const data = await api("dashboard");
-  const metrics = [
+  renderDashboardFrame(data);
+}
+
+function renderDashboardFrame(data) {
+  state.dashboardData = data;
+  const metrics = dashboardMetrics(data);
+  const activeMetric = metrics.find(metric => metric.key === state.dashboardDetailKey) || null;
+  content.innerHTML = `
+    <div class="page-head">
+      <div>
+        <h1>Dashboard</h1>
+        <p id="dashboard-range-summary">Heute: ${escapeHtml(data.range)} · Standort: ${escapeHtml(data.location)}</p>
+      </div>
+      <button class="secondary" id="refresh-location">Standort prüfen</button>
+    </div>
+    <section class="dashboard-grid grid cols-3">
+      ${metrics.map(metric => dashboardMetric(metric)).join("")}
+    </section>
+    ${activeMetric ? dashboardDetailPanel(activeMetric) : ""}
+  `;
+  bindDashboardControls();
+}
+
+function dashboardMetrics(data) {
+  return [
     {
       key: "work",
       label: "Arbeitszeit",
@@ -191,20 +219,57 @@ async function renderDashboard() {
       ].join(""),
     },
   ];
+}
+
+async function refreshDashboard({ silent = true } = {}) {
+  const data = await api("dashboard");
+  if (!silent || !document.querySelector("[data-dashboard-card]")) {
+    renderDashboardFrame(data);
+    return;
+  }
+  updateDashboardFrame(data);
+}
+
+function updateDashboardFrame(data) {
+  state.dashboardData = data;
+  const summary = document.getElementById("dashboard-range-summary");
+  if (summary) summary.textContent = `Heute: ${data.range} · Standort: ${data.location}`;
+  const metrics = dashboardMetrics(data);
+  document.querySelectorAll("[data-dashboard-card]").forEach(card => {
+    const metric = metrics.find(item => item.key === card.dataset.dashboardCard);
+    if (!metric) return;
+    const active = state.dashboardDetailKey === metric.key;
+    card.className = dashboardCardClass(metric, active);
+    const button = card.querySelector(".metric-trigger");
+    button?.setAttribute("aria-expanded", active ? "true" : "false");
+    const value = card.querySelector("[data-dashboard-value]");
+    if (value) {
+      value.textContent = metric.value;
+      value.className = dashboardValueClass(metric);
+    }
+  });
+  syncDashboardDetail(metrics);
+}
+
+function syncDashboardDetail(metrics) {
   const activeMetric = metrics.find(metric => metric.key === state.dashboardDetailKey) || null;
-  content.innerHTML = `
-    <div class="page-head">
-      <div>
-        <h1>Dashboard</h1>
-        <p>Heute: ${escapeHtml(data.range)} · Standort: ${escapeHtml(data.location)}</p>
-      </div>
-      <button class="secondary" id="refresh-location">Standort prüfen</button>
-    </div>
-    <section class="dashboard-grid grid cols-3">
-      ${metrics.map(metric => dashboardMetric(metric)).join("")}
-    </section>
-    ${activeMetric ? dashboardDetailPanel(activeMetric) : ""}
-  `;
+  const existing = document.querySelector(".dashboard-detail-panel");
+  if (!activeMetric) {
+    existing?.remove();
+    return;
+  }
+  if (existing) {
+    const title = existing.querySelector("h2");
+    const grid = existing.querySelector(".dashboard-detail-grid");
+    if (title) title.textContent = activeMetric.label;
+    if (grid) grid.innerHTML = activeMetric.detailHtml;
+  } else {
+    document.querySelector(".dashboard-grid")?.insertAdjacentHTML("afterend", dashboardDetailPanel(activeMetric));
+    bindDashboardDetailClose();
+  }
+}
+
+function bindDashboardControls() {
   document.getElementById("refresh-location").addEventListener("click", async () => {
     const result = await api("detect_location_now");
     notify(`Aktueller Standort: ${result.label}`);
@@ -212,12 +277,16 @@ async function renderDashboard() {
   document.querySelectorAll(".metric-trigger").forEach(button => {
     button.addEventListener("click", () => {
       state.dashboardDetailKey = state.dashboardDetailKey === button.dataset.metric ? null : button.dataset.metric;
-      renderDashboard();
+      renderDashboardFrame(state.dashboardData);
     });
   });
+  bindDashboardDetailClose();
+}
+
+function bindDashboardDetailClose() {
   document.getElementById("close-dashboard-detail")?.addEventListener("click", () => {
     state.dashboardDetailKey = null;
-    renderDashboard();
+    renderDashboardFrame(state.dashboardData);
   });
 }
 
@@ -277,6 +346,37 @@ async function renderCalendar() {
   } else {
     state.calendarDetailDate = null;
   }
+}
+
+async function refreshCalendar({ silent = true } = {}) {
+  const year = state.calendarDate.getFullYear();
+  const month = state.calendarDate.getMonth() + 1;
+  const data = await api("calendar_month", year, month);
+  const grid = document.querySelector(".calendar-grid");
+  if (!silent || !grid) {
+    await renderCalendar();
+    return;
+  }
+  updateCalendarTiles(data.days);
+  const monthPrefix = `${year}-${String(month).padStart(2, "0")}`;
+  if (state.calendarDetailDate?.startsWith(monthPrefix)) {
+    await loadDayDetail(state.calendarDetailDate);
+  } else {
+    state.calendarDetailDate = null;
+  }
+}
+
+function updateCalendarTiles(days) {
+  days.forEach(day => {
+    const tile = document.querySelector(`.day-tile[data-date="${day.date}"]`);
+    if (!tile) return;
+    const fresh = htmlElement(renderDayTile(day));
+    if (!fresh) return;
+    tile.className = fresh.className;
+    tile.innerHTML = fresh.innerHTML;
+    tile.setAttribute("aria-expanded", fresh.getAttribute("aria-expanded") || "false");
+  });
+  updateCalendarSelection();
 }
 
 function renderCalendarWeeks(days, year, month, leading) {
@@ -528,19 +628,56 @@ async function renderEntries() {
 }
 
 async function loadEntries() {
-  const start = document.getElementById("entry-start").value;
-  const end = document.getElementById("entry-end").value;
+  const range = entryDateRange();
+  if (!range) return;
+  const { start, end } = range;
   const result = await api("entries", start, end);
   state.entries = result.rows;
   drawEntries();
 }
 
-function drawEntries() {
+async function refreshEntries({ silent = true } = {}) {
+  const range = entryDateRange();
   const target = document.getElementById("entries-table");
-  const query = document.getElementById("entry-search").value.toLowerCase();
-  const rows = state.entries
+  if (!silent || !range || !target) {
+    await renderEntries();
+    return;
+  }
+  const renderedDates = Array.from(target.querySelectorAll(".entry-row")).map(row => row.dataset.date);
+  const result = await api("entries", range.start, range.end);
+  state.entries = result.rows;
+  const rows = visibleEntryRows();
+  if (!sameStringList(renderedDates, rows.map(row => row.date))) {
+    drawEntries();
+    return;
+  }
+  if (state.entryEditDate && !rows.some(row => row.date === state.entryEditDate)) {
+    state.entryEditDate = null;
+    drawEntries();
+    return;
+  }
+  updateEntryRows(rows);
+  if (state.entryEditDate) await renderEntryEditor(state.entryEditDate, { showLoading: false });
+}
+
+function entryDateRange() {
+  const startInput = document.getElementById("entry-start");
+  const endInput = document.getElementById("entry-end");
+  if (!startInput || !endInput) return null;
+  return { start: startInput.value, end: endInput.value };
+}
+
+function visibleEntryRows() {
+  const query = (document.getElementById("entry-search")?.value || "").toLowerCase();
+  return state.entries
     .filter(row => Object.values(row).join(" ").toLowerCase().includes(query))
     .sort((a, b) => String(a[state.entriesSort.key]).localeCompare(String(b[state.entriesSort.key])) * state.entriesSort.direction);
+}
+
+function drawEntries() {
+  const target = document.getElementById("entries-table");
+  if (!target) return;
+  const rows = visibleEntryRows();
   if (state.entryEditDate && !rows.some(row => row.date === state.entryEditDate)) {
     state.entryEditDate = null;
   }
@@ -554,16 +691,16 @@ function drawEntries() {
         <tbody>${rows.map(row => {
           const editing = state.entryEditDate === row.date;
           return `
-          <tr class="entry-row ${editing ? "is-editing" : ""}">
+          <tr class="entry-row ${editing ? "is-editing" : ""}" data-date="${row.date}">
             <td data-label="Datum" class="entry-date-cell"><strong>${row.date}</strong><small>${weekdayShort(row.date)}<span class="entry-inline-range"> · ${entryRangeLabel(row)}</span></small></td>
-            <td data-label="Beginn" class="entry-start-cell entry-time-cell">${timeShort(row.start) || "—"}</td>
-            <td data-label="Ende" class="entry-end-cell entry-time-cell">${timeShort(row.end) || "—"}</td>
-            <td data-label="Pause" class="entry-detail-cell">${fmtMinutes(row.break_minutes)}</td>
-            <td data-label="Stunden" class="entry-detail-cell">${fmtMinutes(row.actual_minutes)}</td>
-            <td data-label="Saldo" class="entry-balance-cell ${row.balance_minutes >= 0 ? "positive" : "negative"}">${signedMinutes(row.balance_minutes)}</td>
-            <td data-label="Typ" class="entry-detail-cell">${categoryLabel(row.type)}</td>
-            <td data-label="Standort" class="entry-detail-cell">${locationLabel(row.location)}</td>
-            <td data-label="Notiz" class="entry-detail-cell entry-note-cell">${escapeHtml(row.note || "—")}</td>
+            <td data-label="Beginn" class="entry-start-cell entry-time-cell" data-entry-field="start">${timeShort(row.start) || "—"}</td>
+            <td data-label="Ende" class="entry-end-cell entry-time-cell" data-entry-field="end">${timeShort(row.end) || "—"}</td>
+            <td data-label="Pause" class="entry-detail-cell" data-entry-field="break">${fmtMinutes(row.break_minutes)}</td>
+            <td data-label="Stunden" class="entry-detail-cell" data-entry-field="actual">${fmtMinutes(row.actual_minutes)}</td>
+            <td data-label="Saldo" class="entry-balance-cell ${row.balance_minutes >= 0 ? "positive" : "negative"}" data-entry-field="balance">${signedMinutes(row.balance_minutes)}</td>
+            <td data-label="Typ" class="entry-detail-cell" data-entry-field="type">${categoryLabel(row.type)}</td>
+            <td data-label="Standort" class="entry-detail-cell" data-entry-field="location">${locationLabel(row.location)}</td>
+            <td data-label="Notiz" class="entry-detail-cell entry-note-cell" data-entry-field="note">${escapeHtml(row.note || "—")}</td>
             <td class="row-actions entry-action-cell" data-label="Aktionen">
               <button class="secondary edit-entry entry-toggle" data-date="${row.date}" aria-expanded="${editing ? "true" : "false"}" aria-label="${editing ? "Details schließen" : `Details zu ${row.date} öffnen`}">
                 <span class="button-label">${editing ? "Schließen" : "Details"}</span>
@@ -594,11 +731,38 @@ function drawEntries() {
   if (state.entryEditDate) renderEntryEditor(state.entryEditDate);
 }
 
-async function renderEntryEditor(date) {
+function updateEntryRows(rows) {
+  rows.forEach(row => {
+    const entryRow = document.querySelector(`#entries-table .entry-row[data-date="${row.date}"]`);
+    if (!entryRow) return;
+    const dateCell = entryRow.querySelector(".entry-date-cell small");
+    if (dateCell) dateCell.innerHTML = `${weekdayShort(row.date)}<span class="entry-inline-range"> · ${entryRangeLabel(row)}</span>`;
+    setEntryCell(entryRow, "start", timeShort(row.start) || "—");
+    setEntryCell(entryRow, "end", timeShort(row.end) || "—");
+    setEntryCell(entryRow, "break", fmtMinutes(row.break_minutes));
+    setEntryCell(entryRow, "actual", fmtMinutes(row.actual_minutes));
+    setEntryCell(entryRow, "type", categoryLabel(row.type));
+    setEntryCell(entryRow, "location", locationLabel(row.location));
+    setEntryCell(entryRow, "note", row.note || "—");
+    const balance = entryRow.querySelector('[data-entry-field="balance"]');
+    if (balance) {
+      balance.textContent = signedMinutes(row.balance_minutes);
+      balance.classList.toggle("positive", row.balance_minutes >= 0);
+      balance.classList.toggle("negative", row.balance_minutes < 0);
+    }
+  });
+}
+
+function setEntryCell(row, field, value) {
+  const cell = row.querySelector(`[data-entry-field="${field}"]`);
+  if (cell) cell.textContent = value;
+}
+
+async function renderEntryEditor(date, { showLoading = true } = {}) {
   const panel = document.getElementById("entry-edit-panel");
   if (!panel) return;
   panel.className = "detail-panel stack entry-inline-panel";
-  panel.innerHTML = `<div class="loading">Lade Eintrag ${escapeHtml(date)} …</div>`;
+  if (showLoading) panel.innerHTML = `<div class="loading">Lade Eintrag ${escapeHtml(date)} …</div>`;
   const detail = await api("day_detail", date);
   if (state.entryEditDate !== date) return;
   panel.innerHTML = `
@@ -634,19 +798,29 @@ async function renderStatistics() {
 }
 
 async function loadStatistics() {
-  const year = Number(document.getElementById("stats-year").value);
-  const data = await api("statistics", year);
+  const yearInput = document.getElementById("stats-year");
   const body = document.getElementById("stats-body");
+  if (!yearInput || !body) return;
+  const year = Number(yearInput.value);
+  const data = await api("statistics", year);
+  renderStatisticsBody(data);
+  await loadChartLibrary();
+  drawStatsChart(data.months);
+}
+
+function renderStatisticsBody(data) {
+  const body = document.getElementById("stats-body");
+  if (!body) return;
   body.innerHTML = `
     <div class="grid cols-4 stats-metrics">
-      ${metric("Soll", fmtMinutes(data.target_minutes))}
-      ${metric("Ist", fmtMinutes(data.actual_minutes))}
-      ${balanceMetric("Gleitzeit", data.flextime_hours, data.flextime_status, data.flextime_minutes)}
-      ${metric("Resturlaub", `${numberDe(data.remaining_vacation)} Tage`)}
-      ${metric("Urlaub", `${numberDe(data.vacation_used)} Tage`)}
-      ${metric("Krank", `${numberDe(data.sick_used)} Tage`)}
-      ${metric("Büro", `${data.office_days} Tage`)}
-      ${metric("Homeoffice", `${data.homeoffice_days} Tage`)}
+      ${metric("Soll", fmtMinutes(data.target_minutes), null, "target")}
+      ${metric("Ist", fmtMinutes(data.actual_minutes), null, "actual")}
+      ${balanceMetric("Gleitzeit", data.flextime_hours, data.flextime_status, data.flextime_minutes, "flextime")}
+      ${metric("Resturlaub", `${numberDe(data.remaining_vacation)} Tage`, null, "remaining-vacation")}
+      ${metric("Urlaub", `${numberDe(data.vacation_used)} Tage`, null, "vacation")}
+      ${metric("Krank", `${numberDe(data.sick_used)} Tage`, null, "sick")}
+      ${metric("Büro", `${data.office_days} Tage`, null, "office")}
+      ${metric("Homeoffice", `${data.homeoffice_days} Tage`, null, "homeoffice")}
     </div>
     <div class="panel stats-chart-panel">
       <h2>Monatssalden</h2>
@@ -656,22 +830,89 @@ async function loadStatistics() {
       <table>
         <thead><tr><th>Monat</th><th>Soll</th><th>Ist</th><th>Saldo</th><th>Kumuliert</th><th>Urlaub</th><th>Krank</th><th>Homeoffice</th></tr></thead>
         <tbody>${data.months.map(month => `
-          <tr>
+          <tr data-stats-month="${escapeHtml(month.year_month)}">
             <td data-label="Monat">${month.year_month}</td>
-            <td data-label="Soll">${fmtMinutes(month.target_minutes)}</td>
-            <td data-label="Ist">${fmtMinutes(month.actual_minutes)}</td>
-            <td data-label="Saldo">${signedMinutes(month.balance_minutes)}</td>
-            <td data-label="Kumuliert">${balanceBadge(month.carry_over_hours, month.carry_over_status)}</td>
-            <td data-label="Urlaub">${numberDe(month.vacation_days_used)}</td>
-            <td data-label="Krank">${numberDe(month.sick_days_used)}</td>
-            <td data-label="Homeoffice">${month.homeoffice_days}</td>
+            <td data-label="Soll" data-stats-field="target">${fmtMinutes(month.target_minutes)}</td>
+            <td data-label="Ist" data-stats-field="actual">${fmtMinutes(month.actual_minutes)}</td>
+            <td data-label="Saldo" data-stats-field="balance">${signedMinutes(month.balance_minutes)}</td>
+            <td data-label="Kumuliert" data-stats-field="carry">${balanceBadge(month.carry_over_hours, month.carry_over_status)}</td>
+            <td data-label="Urlaub" data-stats-field="vacation">${numberDe(month.vacation_days_used)}</td>
+            <td data-label="Krank" data-stats-field="sick">${numberDe(month.sick_days_used)}</td>
+            <td data-label="Homeoffice" data-stats-field="homeoffice">${month.homeoffice_days}</td>
           </tr>
         `).join("")}</tbody>
       </table>
     </div>
   `;
+}
+
+async function refreshStatistics({ silent = true } = {}) {
+  const yearInput = document.getElementById("stats-year");
+  const body = document.getElementById("stats-body");
+  if (!silent || !yearInput || !body || !body.querySelector("[data-stats-metric]")) {
+    await renderStatistics();
+    return;
+  }
+  const data = await api("statistics", Number(yearInput.value));
+  const renderedMonths = Array.from(body.querySelectorAll("[data-stats-month]")).map(row => row.dataset.statsMonth);
+  if (!sameStringList(renderedMonths, data.months.map(month => month.year_month))) {
+    renderStatisticsBody(data);
+  } else {
+    updateStatisticsBody(data);
+  }
   await loadChartLibrary();
   drawStatsChart(data.months);
+}
+
+function updateStatisticsBody(data) {
+  updateStatsMetric("target", fmtMinutes(data.target_minutes));
+  updateStatsMetric("actual", fmtMinutes(data.actual_minutes));
+  updateStatsBalanceMetric("flextime", data.flextime_hours, data.flextime_status, data.flextime_minutes);
+  updateStatsMetric("remaining-vacation", `${numberDe(data.remaining_vacation)} Tage`);
+  updateStatsMetric("vacation", `${numberDe(data.vacation_used)} Tage`);
+  updateStatsMetric("sick", `${numberDe(data.sick_used)} Tage`);
+  updateStatsMetric("office", `${data.office_days} Tage`);
+  updateStatsMetric("homeoffice", `${data.homeoffice_days} Tage`);
+  data.months.forEach(updateStatsMonthRow);
+}
+
+function updateStatsMetric(key, value, signedValue = null) {
+  const metricElement = document.querySelector(`[data-stats-metric="${key}"]`);
+  const valueElement = metricElement?.querySelector("[data-stats-value]");
+  if (!valueElement) return;
+  valueElement.textContent = value;
+  valueElement.className = signedValue === null ? "" : signedValue >= 0 ? "positive" : "negative";
+}
+
+function updateStatsBalanceMetric(key, value, status, signedValue = null) {
+  const metricElement = document.querySelector(`[data-stats-metric="${key}"]`);
+  if (!metricElement) return;
+  metricElement.className = `metric balance-card ${status?.class || ""}`.trim();
+  const valueElement = metricElement.querySelector("[data-stats-value]");
+  const statusElement = metricElement.querySelector("[data-stats-status]");
+  if (valueElement) {
+    valueElement.textContent = value;
+    valueElement.className = signedValue === null ? "" : signedValue >= 0 ? "positive" : "negative";
+  }
+  if (statusElement) statusElement.textContent = status?.label || "0 bis 45 Stunden";
+}
+
+function updateStatsMonthRow(month) {
+  const row = document.querySelector(`[data-stats-month="${month.year_month}"]`);
+  if (!row) return;
+  setStatsCell(row, "target", fmtMinutes(month.target_minutes));
+  setStatsCell(row, "actual", fmtMinutes(month.actual_minutes));
+  setStatsCell(row, "balance", signedMinutes(month.balance_minutes));
+  setStatsCell(row, "vacation", numberDe(month.vacation_days_used));
+  setStatsCell(row, "sick", numberDe(month.sick_days_used));
+  setStatsCell(row, "homeoffice", month.homeoffice_days);
+  const carry = row.querySelector('[data-stats-field="carry"]');
+  if (carry) carry.innerHTML = balanceBadge(month.carry_over_hours, month.carry_over_status);
+}
+
+function setStatsCell(row, field, value) {
+  const cell = row.querySelector(`[data-stats-field="${field}"]`);
+  if (cell) cell.textContent = value;
 }
 
 function loadChartLibrary() {
@@ -689,12 +930,24 @@ function loadChartLibrary() {
 
 function drawStatsChart(months) {
   const canvas = document.getElementById("stats-chart");
-  if (state.statsChart) state.statsChart.destroy();
+  if (!canvas) return;
+  const labels = months.map(month => month.year_month.slice(5));
+  const values = months.map(month => month.balance_minutes);
+  if (state.statsChart && state.statsChart.canvas !== canvas) {
+    state.statsChart.destroy();
+    state.statsChart = null;
+  }
+  if (state.statsChart) {
+    state.statsChart.data.labels = labels;
+    state.statsChart.data.datasets[0].data = values;
+    state.statsChart.update("none");
+    return;
+  }
   state.statsChart = new Chart(canvas, {
     type: "bar",
     data: {
-      labels: months.map(month => month.year_month.slice(5)),
-      datasets: [{ label: "Saldo in Minuten", data: months.map(month => month.balance_minutes) }],
+      labels,
+      datasets: [{ label: "Saldo in Minuten", data: values }],
     },
   });
 }
@@ -754,9 +1007,11 @@ async function renderVacation() {
 }
 
 async function loadAbsences() {
-  const year = Number(document.getElementById("absence-year").value);
-  const data = await api("absences", year);
+  const yearInput = document.getElementById("absence-year");
   const target = document.getElementById("absence-list");
+  if (!yearInput || !target) return;
+  const year = Number(yearInput.value);
+  const data = await api("absences", year);
   if (!data.rows.length) {
     target.className = "empty";
     target.textContent = "Noch keine Urlaube oder Abwesenheiten für dieses Jahr eingetragen.";
@@ -791,6 +1046,14 @@ async function loadAbsences() {
       await loadAbsences();
     });
   });
+}
+
+async function refreshVacation({ silent = true } = {}) {
+  if (!silent || !document.getElementById("absence-list")) {
+    await renderVacation();
+    return;
+  }
+  await loadAbsences();
 }
 
 async function renderSettings() {
@@ -1096,6 +1359,12 @@ function renderAutomationSettings(settings) {
       settings.auto_resume_after_absence_enabled,
       "Startet nach „Abwesenheit beenden“ automatisch wieder ein Arbeitssegment."
     )}
+    <label>Ansicht automatisch aktualisieren
+      <select name="auto_refresh_interval_seconds">
+        ${autoRefreshIntervalOptions(settings.auto_refresh_interval_seconds)}
+      </select>
+      <small class="help-text">Aktualisiert die sichtbare Ansicht im Hintergrund. Eingaben und Formulare werden dabei nicht unterbrochen.</small>
+    </label>
   `;
 }
 
@@ -1153,6 +1422,18 @@ function settingToggle(name, label, value, helpText) {
       <small class="help-text">${escapeHtml(helpText)}</small>
     </label>
   `;
+}
+
+function autoRefreshIntervalOptions(currentValue) {
+  const current = String(currentValue || "60");
+  return [
+    ["0", "Aus"],
+    ["30", "Alle 30 Sekunden"],
+    ["60", "Jede Minute"],
+    ["120", "Alle 2 Minuten"],
+    ["300", "Alle 5 Minuten"],
+    ["600", "Alle 10 Minuten"],
+  ].map(([value, label]) => `<option value="${value}" ${current === value ? "selected" : ""}>${label}</option>`).join("");
 }
 
 function renderAppearanceSettings(settings) {
@@ -1223,6 +1504,7 @@ function bindSettingsForm(section) {
     try {
       const result = await api("save_settings", values);
       document.body.classList.toggle("dark", result.settings.darkmode === "1");
+      startAutoRefresh(result.settings);
       notify(section?.setup ? "Einrichtung gespeichert" : "Einstellungen gespeichert");
       await renderSettings();
     } catch (error) {
@@ -1320,9 +1602,10 @@ function openResetDialog() {
   });
 }
 
-function metric(label, value, signedValue = null) {
+function metric(label, value, signedValue = null, key = "") {
   const klass = signedValue === null ? "" : signedValue >= 0 ? "positive" : "negative";
-  return `<article class="metric"><span>${label}</span><strong class="${klass}">${value}</strong></article>`;
+  const dataAttr = key ? ` data-stats-metric="${escapeHtml(key)}"` : "";
+  return `<article class="metric"${dataAttr}><span>${label}</span><strong class="${klass}" data-stats-value>${value}</strong></article>`;
 }
 
 function weekdayCheckboxes(rawWeekdays) {
@@ -1335,12 +1618,13 @@ function weekdayCheckboxes(rawWeekdays) {
   `).join("");
 }
 
-function balanceMetric(label, value, status, signedValue = null) {
+function balanceMetric(label, value, status, signedValue = null, key = "") {
   const valueClass = signedValue === null ? "" : signedValue >= 0 ? "positive" : "negative";
-  return `<article class="metric balance-card ${escapeHtml(status?.class || "")}">
+  const dataAttr = key ? ` data-stats-metric="${escapeHtml(key)}"` : "";
+  return `<article class="metric balance-card ${escapeHtml(status?.class || "")}"${dataAttr}>
     <span>${label}</span>
-    <strong class="${valueClass}">${escapeHtml(value)}</strong>
-    <small class="balance-card-status">${escapeHtml(status?.label || "0 bis 45 Stunden")}</small>
+    <strong class="${valueClass}" data-stats-value>${escapeHtml(value)}</strong>
+    <small class="balance-card-status" data-stats-status>${escapeHtml(status?.label || "0 bis 45 Stunden")}</small>
   </article>`;
 }
 
@@ -1366,15 +1650,23 @@ function absenceCountdownDetail(nextAbsence) {
 }
 
 function dashboardMetric(metricConfig) {
-  const klass = metricConfig.signedValue === undefined ? "" : metricConfig.signedValue >= 0 ? "positive" : "negative";
   const active = state.dashboardDetailKey === metricConfig.key;
-  return `<article class="metric dashboard-card ${escapeHtml(metricConfig.extraClass || "")} ${active ? "active" : ""}">
+  return `<article class="${dashboardCardClass(metricConfig, active)}" data-dashboard-card="${escapeHtml(metricConfig.key)}">
     <button class="metric-trigger" type="button" data-metric="${escapeHtml(metricConfig.key)}" aria-expanded="${active ? "true" : "false"}">
       <span>${escapeHtml(metricConfig.label)}</span>
-      <strong class="${klass}">${escapeHtml(metricConfig.value)}</strong>
+      <strong class="${dashboardValueClass(metricConfig)}" data-dashboard-value>${escapeHtml(metricConfig.value)}</strong>
       <em aria-hidden="true"></em>
     </button>
   </article>`;
+}
+
+function dashboardCardClass(metricConfig, active = false) {
+  return `metric dashboard-card ${escapeHtml(metricConfig.extraClass || "")} ${active ? "active" : ""}`.trim();
+}
+
+function dashboardValueClass(metricConfig) {
+  if (metricConfig.signedValue === undefined) return "";
+  return metricConfig.signedValue >= 0 ? "positive" : "negative";
 }
 
 function dashboardDetailPanel(metricConfig) {
@@ -1404,6 +1696,17 @@ function balanceBadge(value, status) {
   return `<span class="balance-badge ${klass}" title="${label}">${escapeHtml(value)} · ${label}</span>`;
 }
 
+function htmlElement(html) {
+  const template = document.createElement("template");
+  template.innerHTML = html.trim();
+  return template.content.firstElementChild;
+}
+
+function sameStringList(left, right) {
+  if (left.length !== right.length) return false;
+  return left.every((value, index) => value === right[index]);
+}
+
 async function api(name, ...args) {
   if (!window.pywebview?.api?.[name]) throw new Error(`API nicht verfügbar: ${name}`);
   return window.pywebview.api[name](...args);
@@ -1415,21 +1718,76 @@ function startCommandPolling() {
   commandPollTimer = setInterval(checkAppCommand, 800);
 }
 
-function startAutoRefresh() {
-  if (autoRefreshTimer) return;
-  window.addEventListener("focus", () => {
-    if (shouldAutoRefresh()) render();
-  });
+function startAutoRefresh(settings = null) {
+  state.autoRefreshIntervalSeconds = autoRefreshSeconds(settings?.auto_refresh_interval_seconds);
+  if (!refreshFocusHandlerAttached) {
+    window.addEventListener("focus", () => {
+      runAutoRefresh();
+    });
+    refreshFocusHandlerAttached = true;
+  }
+  if (autoRefreshTimer) {
+    clearInterval(autoRefreshTimer);
+    autoRefreshTimer = null;
+  }
+  if (state.autoRefreshIntervalSeconds <= 0) return;
   autoRefreshTimer = setInterval(() => {
-    if (shouldAutoRefresh()) render();
-  }, 60000);
+    runAutoRefresh();
+  }, state.autoRefreshIntervalSeconds * 1000);
+}
+
+async function runAutoRefresh() {
+  if (autoRefreshInFlight || !shouldAutoRefresh()) return;
+  autoRefreshInFlight = true;
+  try {
+    await refreshCurrentView({ silent: true });
+  } finally {
+    autoRefreshInFlight = false;
+  }
+}
+
+async function refreshCurrentView({ silent = false } = {}) {
+  try {
+    if (state.view === "dashboard") {
+      await refreshDashboard({ silent });
+      return;
+    }
+    if (state.view === "calendar") {
+      await refreshCalendar({ silent });
+      return;
+    }
+    if (state.view === "entries") {
+      await refreshEntries({ silent });
+      return;
+    }
+    if (state.view === "statistics") {
+      await refreshStatistics({ silent });
+      return;
+    }
+    if (state.view === "vacation") {
+      await refreshVacation({ silent });
+      return;
+    }
+    if (!silent) await render();
+  } catch (error) {
+    if (!silent) showError(error);
+    else console.warn(error);
+  }
 }
 
 function shouldAutoRefresh() {
   const active = document.activeElement;
+  if (document.hidden) return false;
   if (active?.closest?.("form")) return false;
-  if (state.view === "settings") return false;
-  return true;
+  if (active?.matches?.("input, select, textarea, [contenteditable='true']")) return false;
+  return ["dashboard", "calendar", "entries", "statistics", "vacation"].includes(state.view);
+}
+
+function autoRefreshSeconds(rawValue) {
+  const value = Number.parseInt(rawValue ?? "60", 10);
+  if (!Number.isFinite(value) || Number.isNaN(value)) return 60;
+  if (value <= 0) return 0;
+  return Math.min(3600, Math.max(10, value));
 }
 
 async function checkAppCommand() {

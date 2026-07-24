@@ -145,7 +145,7 @@ In der App unter `Einstellungen` sind die Optionen in aufklappbare Kacheln grupp
 - Startdatum der Zeiterfassung, z. B. `2026-07-01`
 - Anfangssaldo Gleitzeit in Stunden, z. B. `12,5`, `50.89` oder `-3,75`
 - manuelle Büro-/Homeoffice-Tage für Zeiten vor dem Tracking
-- Automatisierung: Autostart, automatischer Arbeitsbeginn, automatischer Feierabend, automatische Wiederherstellung und automatisches Fortsetzen nach Pause/Abwesenheit
+- Automatisierung: Autostart, automatischer Arbeitsbeginn, automatischer Feierabend, automatische Wiederherstellung, automatisches Fortsetzen nach Pause/Abwesenheit und Ansichts-Aktualisierungsintervall
 - Standort-Ziele, z. B. `intranet.firma.local`, `intranet.firma.local:443` oder `https://intranet.firma.local`
 - Timeout in Millisekunden
 - Startpuffer je Standort: Büro und Homeoffice können beim automatischen Arbeitsbeginn um eine feste Minutenanzahl vorverlegt werden
@@ -165,6 +165,7 @@ In `Einstellungen` → `Automatisierung` kannst du festlegen, was der Tracker se
 - `Offene Vortagssegmente automatisch schließen`: nutzt beim nächsten Start den letzten Tracker-Zeitstempel, falls Windows kein Shutdown-Ereignis geliefert hat.
 - `Nach Pause automatisch weiterarbeiten`: startet nach `Pause beenden` automatisch wieder Arbeit.
 - `Nach Abwesenheit automatisch weiterarbeiten`: startet nach `Abwesenheit beenden` automatisch wieder Arbeit.
+- `Ansicht automatisch aktualisieren`: legt fest, wie oft die sichtbare Ansicht im Hintergrund aktualisiert wird. 0/Aus deaktiviert den automatischen Refresh; Formulare und aktive Eingabefelder werden dabei nicht unterbrochen.
 
 Wenn du lieber komplett manuell tracken möchtest, schaltest du insbesondere `Arbeitsbeginn automatisch erfassen`, `Arbeitsende automatisch beim Herunterfahren erfassen` und die beiden `automatisch weiterarbeiten`-Optionen aus.
 
