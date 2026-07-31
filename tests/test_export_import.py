@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import base64
 import csv
+from datetime import date as Date
+from datetime import timedelta
+from pathlib import Path
 
 import pytest
 
@@ -103,13 +106,41 @@ def test_xlsx_export_has_readable_overview_and_import_sheet(tmp_path):
     from openpyxl import load_workbook
 
     workbook = load_workbook(export_path, read_only=True, data_only=True)
+    try:
+        assert workbook.sheetnames[:5] == ["Übersicht", "Segmente", "Abwesenheiten", "Notizen", "Importdaten"]
+        assert [cell.value for cell in next(workbook["Übersicht"].iter_rows(max_row=1))][:4] == ["Datum", "Wochentag", "Tagesart", "Beginn"]
+        assert [cell.value for cell in next(workbook["Segmente"].iter_rows(max_row=1))][:4] == ["Datum", "Wochentag", "Typ", "Beginn"]
+        assert next(workbook["Segmente"].iter_rows(min_row=2, max_row=2, values_only=True))[2] == "Arbeit"
+        assert [cell.value for cell in next(workbook["Importdaten"].iter_rows(max_row=1))][:4] == ["Datensatz", "Datum", "Wochentag", "Kategorie"]
+        assert [row[0] for row in workbook["Importdaten"].iter_rows(min_row=2, values_only=True)] == ["SEGMENT", "ABWESENHEIT", "NOTIZ"]
+    finally:
+        workbook.close()
 
-    assert workbook.sheetnames[:5] == ["Übersicht", "Segmente", "Abwesenheiten", "Notizen", "Importdaten"]
-    assert [cell.value for cell in next(workbook["Übersicht"].iter_rows(max_row=1))][:4] == ["Datum", "Wochentag", "Tagesart", "Beginn"]
-    assert [cell.value for cell in next(workbook["Segmente"].iter_rows(max_row=1))][:4] == ["Datum", "Wochentag", "Typ", "Beginn"]
-    assert next(workbook["Segmente"].iter_rows(min_row=2, max_row=2, values_only=True))[2] == "Arbeit"
-    assert [cell.value for cell in next(workbook["Importdaten"].iter_rows(max_row=1))][:4] == ["Datensatz", "Datum", "Wochentag", "Kategorie"]
-    assert [row[0] for row in workbook["Importdaten"].iter_rows(min_row=2, values_only=True)] == ["SEGMENT", "ABWESENHEIT", "NOTIZ"]
+
+def test_xlsx_export_includes_future_absence_without_empty_future_days(tmp_path):
+    conn = make_conn(tmp_path, "future-absence-export.db")
+    today = Date.today()
+    blank_future_day = today + timedelta(days=1)
+    planned_absence = today + timedelta(days=35)
+    database.set_settings(conn, {"tracking_start_date": today.isoformat()})
+    database.upsert_day_type(conn, planned_absence.isoformat(), "URLAUB", note="Geplanter Urlaub")
+
+    export_path = export.export_period(conn, today.isoformat(), today.isoformat(), "xlsx", output_dir=tmp_path)
+
+    from openpyxl import load_workbook
+
+    workbook = load_workbook(export_path, read_only=True, data_only=True)
+    try:
+        overview_dates = [row[0] for row in workbook["Übersicht"].iter_rows(min_row=2, values_only=True)]
+        absence_dates = [row[0] for row in workbook["Abwesenheiten"].iter_rows(min_row=2, values_only=True)]
+        import_dates = [row[1] for row in workbook["Importdaten"].iter_rows(min_row=2, values_only=True)]
+
+        assert planned_absence.isoformat() in overview_dates
+        assert planned_absence.isoformat() in absence_dates
+        assert planned_absence.isoformat() in import_dates
+        assert blank_future_day.isoformat() not in overview_dates
+    finally:
+        workbook.close()
 
 
 def test_xlsx_import_can_read_readable_sheets(tmp_path):
@@ -214,6 +245,36 @@ def test_api_imports_uploaded_base64_file_without_native_dialog(tmp_path):
     payload = base64.b64encode(export_path.read_bytes()).decode("ascii")
     result = api.import_uploaded_file(export_path.name, payload)
 
+    assert result["segments"] == 1
+    with database.connect(api.db_path) as conn:
+        assert database.get_segments_for_date(conn, "2026-07-06")[0]["location"] == "HOME"
+
+
+def test_api_import_keeps_result_when_windows_blocks_temp_cleanup(tmp_path, monkeypatch):
+    source = make_conn(tmp_path, "cleanup-source.db")
+    database.add_segment(source, "2026-07-06", "WORK", "09:00:00", "17:00:00", "HOME", "MANUAL")
+    export_path = export.export_period(source, "2026-07-06", "2026-07-06", "xlsx", output_dir=tmp_path)
+    payload = base64.b64encode(export_path.read_bytes()).decode("ascii")
+    blocked_paths: list[Path] = []
+    original_unlink = Path.unlink
+
+    def locked_temp_unlink(self, *args, **kwargs):
+        if self.name.startswith("worktime-import-"):
+            blocked_paths.append(self)
+            raise PermissionError("Datei wird von einem anderen Prozess verwendet")
+        return original_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", locked_temp_unlink)
+    api = WorktimeApi(tmp_path / "cleanup-target.db")
+    try:
+        result = api.import_uploaded_file(export_path.name, payload)
+    finally:
+        monkeypatch.undo()
+        for path in blocked_paths:
+            if path.exists():
+                original_unlink(path)
+
+    assert result["ok"] is True
     assert result["segments"] == 1
     with database.connect(api.db_path) as conn:
         assert database.get_segments_for_date(conn, "2026-07-06")[0]["location"] == "HOME"

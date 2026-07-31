@@ -6,12 +6,12 @@ import csv
 import json
 import re
 from datetime import date as Date
-from datetime import datetime, time, timedelta
+from datetime import datetime, time
 from pathlib import Path
 from typing import Any
 
 from . import database
-from .calculations import minutes_to_hhmm, recalculate_range
+from .calculations import daterange, minutes_to_hhmm, recalculate_range
 from .config import DATA_DIR, ensure_data_dirs
 from .models import DAY_TYPES, SEGMENT_TYPES, minutes_between, normalize_time_input, parse_date
 
@@ -103,17 +103,23 @@ def export_period(
 
     ensure_data_dirs()
     recalculate_range(conn, start_date, end_date)
+    extra_day_type_dates = _day_type_dates_outside_range(conn, start_date, end_date)
+    for date_text in extra_day_type_dates:
+        recalculate_range(conn, date_text, date_text)
     target_dir = Path(output_dir) if output_dir else EXPORT_DIR
     target_dir.mkdir(parents=True, exist_ok=True)
     fmt = export_format.lower().strip(".")
-    rows = _build_rows(conn, start_date, end_date)
+    rows = _build_rows(conn, start_date, end_date, extra_day_type_dates)
+    exported_dates = _export_dates(start_date, end_date, extra_day_type_dates)
+    file_start_date = exported_dates[0].isoformat()
+    file_end_date = exported_dates[-1].isoformat()
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    path = target_dir / f"arbeitszeit_{start_date}_bis_{end_date}_{timestamp}.{fmt}"
+    path = target_dir / f"arbeitszeit_{file_start_date}_bis_{file_end_date}_{timestamp}.{fmt}"
     if fmt == "csv":
         _export_csv(path, rows)
     elif fmt in {"xlsx", "excel"}:
         path = path.with_suffix(".xlsx")
-        _export_xlsx(path, _build_summary_rows(conn, start_date, end_date), rows)
+        _export_xlsx(path, _build_summary_rows(conn, start_date, end_date, extra_day_type_dates), rows)
     elif fmt == "pdf":
         _export_pdf(path, rows, start_date, end_date)
     else:
@@ -121,14 +127,35 @@ def export_period(
     return path
 
 
-def _build_rows(conn, start_date: str, end_date: str) -> list[dict[str, Any]]:
+def _day_type_dates_outside_range(conn, start_date: str, end_date: str) -> set[str]:
+    return {
+        row["date"]
+        for row in conn.execute(
+            "SELECT DISTINCT date FROM day_types WHERE date < ? OR date > ?",
+            (start_date, end_date),
+        ).fetchall()
+    }
+
+
+def _build_rows(conn, start_date: str, end_date: str, extra_dates: set[str] | None = None) -> list[dict[str, Any]]:
+    export_dates = _export_dates(start_date, end_date, extra_dates)
     summaries = {row["date"]: dict(row) for row in database.get_day_summaries_between(conn, start_date, end_date)}
+    for date_text in extra_dates or set():
+        summary = database.get_day_summary(conn, date_text)
+        if summary:
+            summaries[date_text] = dict(summary)
     segment_rows: dict[str, list[dict[str, Any]]] = {}
     for row in database.get_segments_between(conn, start_date, end_date):
         segment_rows.setdefault(row["date"], []).append(dict(row))
+    for date_text in extra_dates or set():
+        for row in database.get_segments_for_date(conn, date_text):
+            segment_rows.setdefault(date_text, []).append(dict(row))
     day_type_rows: dict[str, list[dict[str, Any]]] = {}
     for row in database.get_day_types_between(conn, start_date, end_date):
         day_type_rows.setdefault(row["date"], []).append(dict(row))
+    for date_text in extra_dates or set():
+        for row in database.get_day_types_for_date(conn, date_text):
+            day_type_rows.setdefault(date_text, []).append(dict(row))
     notes = {
         row["date"]: dict(row)
         for row in conn.execute(
@@ -136,10 +163,12 @@ def _build_rows(conn, start_date: str, end_date: str) -> list[dict[str, Any]]:
             (start_date, end_date),
         ).fetchall()
     }
+    for date_text in extra_dates or set():
+        note = database.get_note_for_date(conn, date_text)
+        if note:
+            notes[date_text] = {"date": date_text, "text": note}
     rows: list[dict[str, Any]] = []
-    current = parse_date(start_date)
-    final = parse_date(end_date)
-    while current <= final:
+    for current in export_dates:
         date_text = current.isoformat()
         for segment in segment_rows.get(date_text, []):
             rows.append(_segment_export_row(segment, current))
@@ -147,9 +176,9 @@ def _build_rows(conn, start_date: str, end_date: str) -> list[dict[str, Any]]:
             rows.append(_day_type_export_row(day_type, current))
         if date_text in notes:
             rows.append(_note_export_row(notes[date_text], current))
-        if date_text in summaries:
+        has_explicit_data = bool(segment_rows.get(date_text) or day_type_rows.get(date_text) or date_text in notes)
+        if date_text in summaries and _include_summary_in_export(date_text, has_explicit_data):
             rows.append(_summary_export_row(summaries[date_text], current, notes.get(date_text, {}).get("text", "")))
-        current += timedelta(days=1)
     return rows
 
 
@@ -160,14 +189,31 @@ def _export_csv(path: Path, rows: list[dict[str, Any]]) -> None:
         writer.writerows(rows)
 
 
-def _build_summary_rows(conn, start_date: str, end_date: str) -> list[dict[str, Any]]:
-    summaries = database.get_day_summaries_between(conn, start_date, end_date)
+def _build_summary_rows(conn, start_date: str, end_date: str, extra_dates: set[str] | None = None) -> list[dict[str, Any]]:
+    summaries = [dict(row) for row in database.get_day_summaries_between(conn, start_date, end_date)]
+    for date_text in extra_dates or set():
+        summary = database.get_day_summary(conn, date_text)
+        if summary:
+            summaries.append(dict(summary))
+    summaries.sort(key=lambda row: row["date"])
     segments_by_date: dict[str, list[dict[str, Any]]] = {}
     for row in database.get_segments_between(conn, start_date, end_date):
         segments_by_date.setdefault(row["date"], []).append(dict(row))
+    for date_text in extra_dates or set():
+        for row in database.get_segments_for_date(conn, date_text):
+            segments_by_date.setdefault(date_text, []).append(dict(row))
+    day_type_dates = {row["date"] for row in database.get_day_types_between(conn, start_date, end_date)}
+    day_type_dates.update(extra_dates or set())
     notes = database.get_notes_between(conn, start_date, end_date)
+    for date_text in extra_dates or set():
+        note = database.get_note_for_date(conn, date_text)
+        if note:
+            notes[date_text] = note
     rows: list[dict[str, Any]] = []
     for summary in summaries:
+        has_explicit_data = bool(segments_by_date.get(summary["date"]) or summary["date"] in day_type_dates or summary["date"] in notes)
+        if not _include_summary_in_export(summary["date"], has_explicit_data):
+            continue
         start, end = _first_last_work_times(segments_by_date.get(summary["date"], []))
         rows.append(
             {
@@ -185,6 +231,24 @@ def _build_summary_rows(conn, start_date: str, end_date: str) -> list[dict[str, 
             }
         )
     return rows
+
+
+def _export_dates(start_date: str, end_date: str, extra_dates: set[str] | None = None) -> list[Date]:
+    dates = {day.isoformat() for day in daterange(parse_date(start_date), parse_date(end_date))}
+    dates.update(extra_dates or set())
+    return [parse_date(date_text) for date_text in sorted(dates)]
+
+
+def _include_summary_in_export(date_text: str, has_explicit_data: bool) -> bool:
+    """Keep future exports focused on real local data.
+
+    Recalculating a future range creates technical day_summary rows for normal
+    future workdays. Those rows are useful internally but make exports look like
+    many future minus days. Explicit future data, such as planned vacation, is
+    still exported with its calculated summary.
+    """
+
+    return has_explicit_data or parse_date(date_text) <= Date.today()
 
 
 def _export_xlsx(path: Path, summary_rows: list[dict[str, Any]], rows: list[dict[str, Any]]) -> None:
@@ -530,13 +594,16 @@ def _read_xlsx_sdata_values(path: Path) -> list[tuple[int, Any]]:
         raise RuntimeError("SAP-SDATA-Excel-Import benoetigt openpyxl. Bitte requirements.txt installieren.") from exc
 
     workbook = load_workbook(path, read_only=True, data_only=True)
-    values: list[tuple[int, Any]] = []
-    for sheet in workbook.worksheets:
-        for row_index, row in enumerate(sheet.iter_rows(values_only=True), start=1):
-            for value in row:
-                if value not in (None, ""):
-                    values.append((row_index, value))
-    return values
+    try:
+        values: list[tuple[int, Any]] = []
+        for sheet in workbook.worksheets:
+            for row_index, row in enumerate(sheet.iter_rows(values_only=True), start=1):
+                for value in row:
+                    if value not in (None, ""):
+                        values.append((row_index, value))
+        return values
+    finally:
+        workbook.close()
 
 
 def _sdata_value_from_row(row: dict[str, Any]) -> Any:
@@ -1573,11 +1640,14 @@ def _read_xlsx_rows(path: Path) -> list[dict[str, Any]]:
         raise RuntimeError("Excel-Import benoetigt openpyxl. Bitte requirements.txt installieren.") from exc
 
     workbook = load_workbook(path, read_only=True, data_only=True)
-    structured_rows = _read_structured_xlsx_rows(workbook)
-    if structured_rows:
-        return structured_rows
-    sheet = workbook["Importdaten"] if "Importdaten" in workbook.sheetnames else workbook.active
-    return _read_xlsx_sheet_rows(sheet)
+    try:
+        structured_rows = _read_structured_xlsx_rows(workbook)
+        if structured_rows:
+            return structured_rows
+        sheet = workbook["Importdaten"] if "Importdaten" in workbook.sheetnames else workbook.active
+        return _read_xlsx_sheet_rows(sheet)
+    finally:
+        workbook.close()
 
 
 def _read_xlsx_sheet_rows(sheet) -> list[dict[str, Any]]:

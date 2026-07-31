@@ -271,6 +271,13 @@ class WorktimeApi:
         with self._locked_conn() as conn:
             return _settings_for_ui(database.get_settings(conn))
 
+    def export_defaults(self) -> dict[str, str]:
+        with self._locked_conn() as conn:
+            return {
+                "start_date": _default_export_start_date(conn),
+                "end_date": _default_export_end_date(conn),
+            }
+
     def save_settings(self, values: dict[str, Any]) -> dict[str, Any]:
         autostart_enabled: bool | None = None
         with self._locked_conn() as conn:
@@ -367,11 +374,7 @@ class WorktimeApi:
                 result = export.import_file(conn, tmp_path, source_name=Path(file_name).name)
             return {"ok": True, "name": Path(file_name).name, **result}
         finally:
-            if tmp_path:
-                try:
-                    tmp_path.unlink()
-                except FileNotFoundError:
-                    pass
+            _unlink_temp_file(tmp_path, self.logger)
 
     def preview_sap_sdata_file(self, file_name: str, payload_base64: str) -> dict[str, Any]:
         suffix = Path(file_name or "").suffix.lower()
@@ -393,11 +396,7 @@ class WorktimeApi:
                 preview = export.preview_sdata_file(conn, tmp_path, source_name=Path(file_name).name)
             return {"ok": True, "name": Path(file_name).name, **preview}
         finally:
-            if tmp_path:
-                try:
-                    tmp_path.unlink()
-                except FileNotFoundError:
-                    pass
+            _unlink_temp_file(tmp_path, self.logger)
 
     def import_sap_sdata_preview(self, payload: dict[str, Any]) -> dict[str, Any]:
         days = payload.get("days")
@@ -791,6 +790,38 @@ def _known_recalculation_range(conn, settings: dict[str, str]) -> tuple[str, str
         if row["max_date"]:
             dates.append(row["max_date"])
     return min(dates), max(dates)
+
+
+def _default_export_start_date(conn) -> str:
+    dates = _real_local_data_dates(conn, "MIN")
+    return min(dates) if dates else f"{Date.today().year}-01-01"
+
+
+def _default_export_end_date(conn) -> str:
+    dates = _real_local_data_dates(conn, "MAX")
+    return max([today_str(), *dates]) if dates else today_str()
+
+
+def _real_local_data_dates(conn, aggregate: str) -> list[str]:
+    if aggregate not in {"MIN", "MAX"}:
+        raise ValueError("Ungueltige Datumsaggregation.")
+    dates: list[str] = []
+    for table in ("segments", "day_types", "notes"):
+        row = conn.execute(f"SELECT {aggregate}(date) AS value FROM {table}").fetchone()
+        if row["value"]:
+            dates.append(row["value"])
+    return dates
+
+
+def _unlink_temp_file(path: Path | None, logger: logging.Logger) -> None:
+    if not path:
+        return
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        logger.warning("Temporaere Importdatei konnte nicht geloescht werden: %s", exc)
 
 
 def _day_type_ranges_for_date(conn, date: str) -> list[dict[str, Any]]:

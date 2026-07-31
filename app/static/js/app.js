@@ -1400,6 +1400,7 @@ async function renderSettings() {
     const result = await api("create_backup");
     notify(`Backup erstellt: ${result.name}`);
   });
+  hydrateExportDefaults();
   document.getElementById("export-form")?.addEventListener("submit", async event => {
     event.preventDefault();
     const form = event.currentTarget;
@@ -1795,6 +1796,7 @@ function renderFileSettings() {
           <select name="format"><option value="xlsx">Excel</option><option value="csv">CSV</option><option value="pdf">PDF</option></select>
         </label>
         <button>Export erstellen</button>
+        <small id="export-range-hint" class="help-text field-wide">Der Zeitraum wird automatisch bis zum neuesten Eintrag, zur neuesten Abwesenheit oder Notiz gesetzt.</small>
       </form>
       <div class="import-panel">
         <div>
@@ -1816,6 +1818,29 @@ function renderFileSettings() {
       <div id="sap-sdata-result" class="sap-import-preview" aria-live="polite"></div>
     </div>
   `;
+}
+
+async function hydrateExportDefaults() {
+  const form = document.getElementById("export-form");
+  if (!form) return;
+  const initialStart = form.start_date.value;
+  const initialEnd = form.end_date.value;
+  try {
+    const defaults = await api("export_defaults");
+    if (!document.body.contains(form)) return;
+    if (defaults.start_date && form.start_date.value === initialStart) {
+      form.start_date.value = defaults.start_date;
+    }
+    if (defaults.end_date && form.end_date.value === initialEnd) {
+      form.end_date.value = defaults.end_date;
+    }
+    const hint = document.getElementById("export-range-hint");
+    if (hint) {
+      hint.textContent = `Standardzeitraum: ${form.start_date.value} bis ${form.end_date.value}. Geplante Abwesenheiten nach heute werden mit exportiert.`;
+    }
+  } catch (error) {
+    console.warn(error);
+  }
 }
 
 function bindSapSdataImportControls() {

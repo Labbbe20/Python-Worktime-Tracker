@@ -116,6 +116,7 @@ Hinweis Windows: pywebview nutzt üblicherweise Microsoft Edge WebView2. Auf akt
 - Die gebündelte Windows-Exe und die App verwenden `app/static/icons/app.ico` als Symbol.
 - Backups werden ausschließlich manuell ausgelöst und lokal in `data/backups/` abgelegt.
 - Exporte enthalten Rohdaten (`SEGMENT`, `ABWESENHEIT`, `NOTIZ`) plus berechnete Tages-Summen. Excel-Dateien öffnen zuerst mit dem lesbaren Blatt `Übersicht`; die Detailblätter und `Importdaten` bleiben importierbar. Als Bezug gilt das Datum, technische Datenbank-IDs werden in neuen Exporten nicht benötigt. CSV- und Excel-Dateien aus diesem Export können über `Backup & Export` wieder importiert werden; Tages-Summen werden beim Import ignoriert und anschließend neu berechnet.
+- Der Export-Standardzeitraum geht vom ersten echten lokalen Eintrag bis zum neuesten lokalen Eintrag, zur neuesten Abwesenheit oder Notiz. Abwesenheiten werden auch außerhalb eines enger gewählten Exportzeitraums mit exportiert; leere zukünftige Arbeitstage bleiben aus der Datei heraus.
 - SAP-SDATA-Dateien können unter `Backup & Export` zuerst als Vorschau geprüft werden. `P10` wird als Arbeitsbeginn, `P20` als Arbeitsende gelesen; Lücken zwischen zwei Arbeitssegmenten werden als Pause vorgeschlagen. Importiert werden nur die ausgewählten Tage, danach wird wie beim normalen Import ein HTML-Protokoll geschrieben.
 - In `Einträge` kannst du die Liste zusätzlich filtern: Tagesart, Standort, Saldo, laufende/abgeschlossene Tage, Notizen sowie Arbeitszeit größer/kleiner als eine Stundenangabe.
 

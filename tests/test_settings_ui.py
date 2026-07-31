@@ -61,6 +61,20 @@ def test_api_saves_auto_refresh_interval(tmp_path):
     assert result["settings"]["auto_refresh_interval_seconds"] == "300"
 
 
+def test_export_defaults_cover_all_real_local_data_and_future_absence(tmp_path):
+    db_path = tmp_path / "database.db"
+    api = WorktimeApi(db_path)
+    planned_absence = Date.today() + timedelta(days=35)
+    with database.connect(db_path) as conn:
+        database.add_segment(conn, "2026-01-05", "WORK", "08:00:00", "16:00:00", "OFFICE")
+        database.upsert_day_type(conn, planned_absence.isoformat(), "URLAUB", note="Geplant")
+
+    result = api.export_defaults()
+
+    assert result["start_date"] == "2026-01-05"
+    assert result["end_date"] == planned_absence.isoformat()
+
+
 def test_api_saves_office_quota_and_preload_settings(tmp_path):
     db_path = tmp_path / "database.db"
     api = WorktimeApi(db_path)
