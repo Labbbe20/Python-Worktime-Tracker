@@ -62,6 +62,17 @@ def test_tray_launches_same_executable_when_frozen(monkeypatch):
     ]
 
 
+def test_tray_can_launch_app_hidden_when_frozen(monkeypatch):
+    monkeypatch.setattr(tray.sys, "executable", r"C:\Tools\ArbeitszeitTracker.exe")
+    monkeypatch.setattr(tray.sys, "frozen", True, raising=False)
+
+    assert tray._app_launch_command(hidden=True) == [
+        r"C:\Tools\ArbeitszeitTracker.exe",
+        "--app",
+        "--hidden",
+    ]
+
+
 def test_tray_uses_app_script_when_not_frozen(monkeypatch):
     monkeypatch.setattr(tray.sys, "platform", "win32")
     monkeypatch.delattr(tray.sys, "frozen", raising=False)

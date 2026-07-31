@@ -8,9 +8,19 @@ const state = {
   settingsDetailKey: "",
   entries: [],
   entriesSort: { key: "date", direction: -1 },
+  entryFilters: {
+    dayType: "all",
+    location: "all",
+    balance: "all",
+    status: "all",
+    note: "all",
+    minHours: "",
+    maxHours: "",
+  },
   statsChart: null,
   dashboardData: null,
   autoRefreshIntervalSeconds: 60,
+  sapSdataPreview: null,
 };
 
 const content = document.getElementById("content");
@@ -199,13 +209,15 @@ function dashboardMetrics(data) {
       value: `${numberDe(data.location_stats.office_percent)} %`,
       signedValue: data.location_stats.office_requirement_met ? 1 : -1,
       detailHtml: [
+        detailRow("Zeitraum", officeQuotaPeriodLabel(data.location_stats)),
+        detailRow("Mindestquote", `${numberDe(data.location_stats.target_percent)} %`),
         detailRow("Büro gesamt", `${numberDe(data.location_stats.office_days)} Tage`),
         detailRow("Homeoffice gesamt", `${numberDe(data.location_stats.homeoffice_days)} Tage`),
         detailRow("Getrackt Büro", `${numberDe(data.location_stats.tracked_office_days)} Tage`),
         detailRow("Getrackt Homeoffice", `${numberDe(data.location_stats.tracked_homeoffice_days)} Tage`),
         detailRow("Manuell Büro", `${numberDe(data.location_stats.manual_office_days)} Tage`),
         detailRow("Manuell Homeoffice", `${numberDe(data.location_stats.manual_homeoffice_days)} Tage`),
-        detailText(data.location_stats.office_requirement_met ? "Mindestens 50 % Büro ist aktuell erfüllt." : "Achtung: unter 50 % Büroanteil.", data.location_stats.office_requirement_met ? "positive" : "negative"),
+        detailText(data.location_stats.office_requirement_met ? "Die eingestellte Büroquote ist aktuell erfüllt." : "Achtung: Die eingestellte Büroquote ist aktuell unterschritten.", data.location_stats.office_requirement_met ? "positive" : "negative"),
       ].join(""),
     },
     {
@@ -351,7 +363,7 @@ async function renderCalendar() {
 async function refreshCalendar({ silent = true } = {}) {
   const year = state.calendarDate.getFullYear();
   const month = state.calendarDate.getMonth() + 1;
-  const data = await api("calendar_month", year, month);
+  const data = await api("calendar_month", year, month, true);
   const grid = document.querySelector(".calendar-grid");
   if (!silent || !grid) {
     await renderCalendar();
@@ -620,10 +632,77 @@ async function renderEntries() {
       <label>Suche <input id="entry-search" type="search" placeholder="Notiz, Typ, Standort"></label>
       <button id="load-entries">Aktualisieren</button>
     </section>
+    <section class="toolbar entries-filterbar" aria-label="Einträge filtern">
+      <label>Tag
+        <select id="entry-filter-day-type">
+          ${entryFilterOptions("dayType", [
+            ["all", "Alle Tage"],
+            ["workdays", "Arbeitstage"],
+            ["absence_days", "Abwesenheitstage"],
+            ["weekend", "Wochenende"],
+            ["vacation", "Urlaub"],
+            ["sick", "Krank"],
+            ["holiday", "Feiertag"],
+            ["flextime", "Gleitzeittag"],
+            ["travel", "Dienstreise"],
+            ["not_tracked", "Vor Startdatum"],
+          ])}
+        </select>
+      </label>
+      <label>Standort
+        <select id="entry-filter-location">
+          ${entryFilterOptions("location", [
+            ["all", "Alle Standorte"],
+            ["office", "Büro"],
+            ["home", "Homeoffice"],
+            ["mixed", "Gemischt"],
+            ["unknown", "Unbekannt/leer"],
+          ])}
+        </select>
+      </label>
+      <label>Saldo
+        <select id="entry-filter-balance">
+          ${entryFilterOptions("balance", [
+            ["all", "Alle Salden"],
+            ["positive", "Plus"],
+            ["negative", "Minus"],
+            ["neutral", "Genau 0"],
+          ])}
+        </select>
+      </label>
+      <label>Status
+        <select id="entry-filter-status">
+          ${entryFilterOptions("status", [
+            ["all", "Alle Status"],
+            ["running", "Laufend"],
+            ["complete", "Abgeschlossen"],
+            ["without_time", "Ohne Zeiten"],
+          ])}
+        </select>
+      </label>
+      <label>Notiz
+        <select id="entry-filter-note">
+          ${entryFilterOptions("note", [
+            ["all", "Alle Notizen"],
+            ["with", "Mit Notiz"],
+            ["without", "Ohne Notiz"],
+          ])}
+        </select>
+      </label>
+      <label>Arbeitszeit &gt; h
+        <input id="entry-filter-min-hours" type="number" min="0" step="0.25" inputmode="decimal" value="${escapeHtml(state.entryFilters.minHours)}" placeholder="z. B. 8">
+      </label>
+      <label>Arbeitszeit &lt; h
+        <input id="entry-filter-max-hours" type="number" min="0" step="0.25" inputmode="decimal" value="${escapeHtml(state.entryFilters.maxHours)}" placeholder="z. B. 6">
+      </label>
+      <button id="reset-entry-filters" class="secondary compact-button" type="button">Filter zurücksetzen</button>
+    </section>
+    <div id="entry-filter-summary" class="filter-summary" aria-live="polite"></div>
     <section id="entries-table"></section>
   `;
   document.getElementById("load-entries").addEventListener("click", loadEntries);
   document.getElementById("entry-search").addEventListener("input", drawEntries);
+  bindEntryFilters();
   await loadEntries();
 }
 
@@ -644,9 +723,10 @@ async function refreshEntries({ silent = true } = {}) {
     return;
   }
   const renderedDates = Array.from(target.querySelectorAll(".entry-row")).map(row => row.dataset.date);
-  const result = await api("entries", range.start, range.end);
+  const result = await api("entries", range.start, range.end, true);
   state.entries = result.rows;
   const rows = visibleEntryRows();
+  updateEntryFilterSummary(rows.length);
   if (!sameStringList(renderedDates, rows.map(row => row.date))) {
     drawEntries();
     return;
@@ -668,18 +748,172 @@ function entryDateRange() {
 }
 
 function visibleEntryRows() {
-  const query = (document.getElementById("entry-search")?.value || "").toLowerCase();
+  const query = normalizeSearchText(document.getElementById("entry-search")?.value || "");
   return state.entries
-    .filter(row => Object.values(row).join(" ").toLowerCase().includes(query))
+    .filter(row => !query || entrySearchText(row).includes(query))
+    .filter(entryMatchesFilters)
     .sort((a, b) => String(a[state.entriesSort.key]).localeCompare(String(b[state.entriesSort.key])) * state.entriesSort.direction);
+}
+
+function bindEntryFilters() {
+  const bindings = [
+    ["entry-filter-day-type", "dayType", "change"],
+    ["entry-filter-location", "location", "change"],
+    ["entry-filter-balance", "balance", "change"],
+    ["entry-filter-status", "status", "change"],
+    ["entry-filter-note", "note", "change"],
+    ["entry-filter-min-hours", "minHours", "input"],
+    ["entry-filter-max-hours", "maxHours", "input"],
+  ];
+  bindings.forEach(([id, key, eventName]) => {
+    document.getElementById(id)?.addEventListener(eventName, event => {
+      state.entryFilters[key] = event.currentTarget.value;
+      drawEntries();
+    });
+  });
+  document.getElementById("reset-entry-filters")?.addEventListener("click", () => {
+    state.entryFilters = {
+      dayType: "all",
+      location: "all",
+      balance: "all",
+      status: "all",
+      note: "all",
+      minHours: "",
+      maxHours: "",
+    };
+    syncEntryFilterControls();
+    drawEntries();
+  });
+}
+
+function syncEntryFilterControls() {
+  const values = {
+    "entry-filter-day-type": state.entryFilters.dayType,
+    "entry-filter-location": state.entryFilters.location,
+    "entry-filter-balance": state.entryFilters.balance,
+    "entry-filter-status": state.entryFilters.status,
+    "entry-filter-note": state.entryFilters.note,
+    "entry-filter-min-hours": state.entryFilters.minHours,
+    "entry-filter-max-hours": state.entryFilters.maxHours,
+  };
+  Object.entries(values).forEach(([id, value]) => {
+    const control = document.getElementById(id);
+    if (control) control.value = value;
+  });
+}
+
+function entryMatchesFilters(row) {
+  const filters = state.entryFilters;
+  if (!entryMatchesDayType(row, filters.dayType)) return false;
+  if (!entryMatchesLocation(row, filters.location)) return false;
+  if (!entryMatchesBalance(row, filters.balance)) return false;
+  if (!entryMatchesStatus(row, filters.status)) return false;
+  if (!entryMatchesNote(row, filters.note)) return false;
+  const actualHours = Number(row.actual_minutes || 0) / 60;
+  const minHours = parseFilterNumber(filters.minHours);
+  const maxHours = parseFilterNumber(filters.maxHours);
+  if (minHours !== null && actualHours <= minHours) return false;
+  if (maxHours !== null && actualHours >= maxHours) return false;
+  return true;
+}
+
+function entryMatchesDayType(row, filter) {
+  const type = row.type || "";
+  if (filter === "all") return true;
+  if (filter === "workdays") return type === "WORKDAY";
+  if (filter === "absence_days") return ["VACATION", "SICK", "HOLIDAY", "FLEXTIME", "TRAVEL"].includes(type);
+  return {
+    weekend: "WEEKEND",
+    vacation: "VACATION",
+    sick: "SICK",
+    holiday: "HOLIDAY",
+    flextime: "FLEXTIME",
+    travel: "TRAVEL",
+    not_tracked: "NOT_TRACKED",
+  }[filter] === type;
+}
+
+function entryMatchesLocation(row, filter) {
+  const location = row.location || "";
+  if (filter === "all") return true;
+  if (filter === "office") return location === "OFFICE";
+  if (filter === "home") return location === "HOME";
+  if (filter === "mixed") return location === "MIXED";
+  if (filter === "unknown") return !location || location === "UNKNOWN";
+  return true;
+}
+
+function entryMatchesBalance(row, filter) {
+  const balance = Number(row.balance_minutes || 0);
+  if (filter === "positive") return balance > 0;
+  if (filter === "negative") return balance < 0;
+  if (filter === "neutral") return balance === 0;
+  return true;
+}
+
+function entryMatchesStatus(row, filter) {
+  const hasStart = Boolean(row.start);
+  const hasEnd = Boolean(row.end);
+  if (filter === "running") return hasStart && !hasEnd;
+  if (filter === "complete") return hasStart && hasEnd;
+  if (filter === "without_time") return !hasStart && !hasEnd;
+  return true;
+}
+
+function entryMatchesNote(row, filter) {
+  const hasNote = Boolean(String(row.note || "").trim());
+  if (filter === "with") return hasNote;
+  if (filter === "without") return !hasNote;
+  return true;
+}
+
+function parseFilterNumber(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return null;
+  const parsed = Number(raw.replace(",", "."));
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function entryFilterOptions(key, options) {
+  const current = state.entryFilters[key];
+  return options.map(([value, label]) => `<option value="${escapeHtml(value)}" ${current === value ? "selected" : ""}>${escapeHtml(label)}</option>`).join("");
+}
+
+function entrySearchText(row) {
+  return normalizeSearchText([
+    row.date,
+    germanDate(row.date),
+    weekdayShort(row.date),
+    timeShort(row.start),
+    timeShort(row.end),
+    fmtMinutes(row.break_minutes),
+    fmtMinutes(row.actual_minutes),
+    signedMinutes(row.balance_minutes),
+    row.type,
+    categoryLabel(row.type),
+    row.location,
+    locationLabel(row.location),
+    row.note,
+    entryRangeLabel(row),
+  ].filter(Boolean).join(" "));
+}
+
+function germanDate(dateText) {
+  const parts = String(dateText || "").split("-");
+  return parts.length === 3 ? `${parts[2]}.${parts[1]}.${parts[0]}` : "";
 }
 
 function drawEntries() {
   const target = document.getElementById("entries-table");
   if (!target) return;
   const rows = visibleEntryRows();
+  updateEntryFilterSummary(rows.length);
   if (state.entryEditDate && !rows.some(row => row.date === state.entryEditDate)) {
     state.entryEditDate = null;
+  }
+  if (!rows.length) {
+    target.innerHTML = `<div class="empty">Keine Einträge für diese Filter gefunden.</div>`;
+    return;
   }
   target.innerHTML = `
     <div class="table-wrap entry-table-wrap">
@@ -729,6 +963,72 @@ function drawEntries() {
     });
   });
   if (state.entryEditDate) renderEntryEditor(state.entryEditDate);
+}
+
+function updateEntryFilterSummary(visibleCount) {
+  const summary = document.getElementById("entry-filter-summary");
+  if (!summary) return;
+  const total = state.entries.length;
+  const active = activeEntryFilterLabels();
+  summary.innerHTML = `
+    <span>${visibleCount} von ${total} Tagen sichtbar</span>
+    ${active.length ? `<strong>${active.map(escapeHtml).join(" · ")}</strong>` : `<strong>Keine Zusatzfilter aktiv</strong>`}
+  `;
+}
+
+function activeEntryFilterLabels() {
+  const filters = state.entryFilters;
+  const labels = [];
+  if (filters.dayType !== "all") labels.push(`Tag: ${entryFilterLabel("dayType", filters.dayType)}`);
+  if (filters.location !== "all") labels.push(`Standort: ${entryFilterLabel("location", filters.location)}`);
+  if (filters.balance !== "all") labels.push(`Saldo: ${entryFilterLabel("balance", filters.balance)}`);
+  if (filters.status !== "all") labels.push(`Status: ${entryFilterLabel("status", filters.status)}`);
+  if (filters.note !== "all") labels.push(`Notiz: ${entryFilterLabel("note", filters.note)}`);
+  if (filters.minHours) labels.push(`Mehr als ${filters.minHours} h`);
+  if (filters.maxHours) labels.push(`Weniger als ${filters.maxHours} h`);
+  return labels;
+}
+
+function entryFilterLabel(key, value) {
+  const options = {
+    dayType: {
+      all: "Alle Tage",
+      workdays: "Arbeitstage",
+      absence_days: "Abwesenheitstage",
+      weekend: "Wochenende",
+      vacation: "Urlaub",
+      sick: "Krank",
+      holiday: "Feiertag",
+      flextime: "Gleitzeittag",
+      travel: "Dienstreise",
+      not_tracked: "Vor Startdatum",
+    },
+    location: {
+      all: "Alle Standorte",
+      office: "Büro",
+      home: "Homeoffice",
+      mixed: "Gemischt",
+      unknown: "Unbekannt/leer",
+    },
+    balance: {
+      all: "Alle Salden",
+      positive: "Plus",
+      negative: "Minus",
+      neutral: "Genau 0",
+    },
+    status: {
+      all: "Alle Status",
+      running: "Laufend",
+      complete: "Abgeschlossen",
+      without_time: "Ohne Zeiten",
+    },
+    note: {
+      all: "Alle Notizen",
+      with: "Mit Notiz",
+      without: "Ohne Notiz",
+    },
+  };
+  return options[key]?.[value] || value;
 }
 
 function updateEntryRows(rows) {
@@ -853,7 +1153,7 @@ async function refreshStatistics({ silent = true } = {}) {
     await renderStatistics();
     return;
   }
-  const data = await api("statistics", Number(yearInput.value));
+  const data = await api("statistics", Number(yearInput.value), true);
   const renderedMonths = Array.from(body.querySelectorAll("[data-stats-month]")).map(row => row.dataset.statsMonth);
   if (!sameStringList(renderedMonths, data.months.map(month => month.year_month))) {
     renderStatisticsBody(data);
@@ -1148,6 +1448,7 @@ async function renderSettings() {
       }
     }
   });
+  bindSapSdataImportControls();
   document.getElementById("open-reset-dialog")?.addEventListener("click", openResetDialog);
 }
 
@@ -1302,6 +1603,27 @@ function renderLocationSettings(settings) {
       <small class="help-text">Servername ohne Port wird per Ping geprüft. host:port oder https://... wird per TCP geprüft. Erreichbar bedeutet Büro, nicht erreichbar bedeutet Homeoffice.</small>
     </label>
     <label>Timeout Standortcheck (ms) <input name="homeoffice_check_timeout_ms" type="number" min="50" value="${escapeHtml(settings.homeoffice_check_timeout_ms)}"></label>
+    <label>Mindestquote Büro (%)
+      <input name="office_quota_target_percent" type="number" min="0" max="100" step="0.1" value="${escapeHtml(settings.office_quota_target_percent || "50")}">
+      <small class="help-text">Schwelle, ab der die Dashboard-Kachel als erfüllt markiert wird.</small>
+    </label>
+    <label>Zeitraum für Officequote
+      <select name="office_quota_period_mode">
+        <option value="all" ${settings.office_quota_period_mode !== "current_year" && settings.office_quota_period_mode !== "rolling_365" && settings.office_quota_period_mode !== "custom" ? "selected" : ""}>Alles seit Trackingstart</option>
+        <option value="current_year" ${settings.office_quota_period_mode === "current_year" ? "selected" : ""}>Aktuelles Kalenderjahr</option>
+        <option value="rolling_365" ${settings.office_quota_period_mode === "rolling_365" ? "selected" : ""}>Letzte 365 Tage</option>
+        <option value="custom" ${settings.office_quota_period_mode === "custom" ? "selected" : ""}>Eigener Zeitraum</option>
+      </select>
+      <small class="help-text">Manuelle Büro-/Homeoffice-Tage werden nur bei „Alles seit Trackingstart“ eingerechnet.</small>
+    </label>
+    <label class="conditional-field" data-show-when="office_quota_period_mode:custom">
+      Officequote von
+      <input name="office_quota_custom_start" type="date" value="${escapeHtml(settings.office_quota_custom_start || "")}">
+    </label>
+    <label class="conditional-field" data-show-when="office_quota_period_mode:custom">
+      Officequote bis
+      <input name="office_quota_custom_end" type="date" value="${escapeHtml(settings.office_quota_custom_end || "")}">
+    </label>
     <label>Startpuffer Büro (Minuten)
       <input name="office_start_buffer_minutes" type="number" min="0" step="1" value="${escapeHtml(settings.office_start_buffer_minutes || "0")}">
       <small class="help-text">Wird nur beim automatischen Arbeitsbeginn abgezogen.</small>
@@ -1358,6 +1680,12 @@ function renderAutomationSettings(settings) {
       "Nach Abwesenheit automatisch weiterarbeiten",
       settings.auto_resume_after_absence_enabled,
       "Startet nach „Abwesenheit beenden“ automatisch wieder ein Arbeitssegment."
+    )}
+    ${settingToggle(
+      "preload_app_on_tracker_start",
+      "App-Fenster im Hintergrund vorladen",
+      settings.preload_app_on_tracker_start,
+      "Startet die Oberfläche beim Tracker-Start versteckt, damit „App öffnen“ unter Windows deutlich schneller reagiert."
     )}
     <label>Ansicht automatisch aktualisieren
       <select name="auto_refresh_interval_seconds">
@@ -1477,8 +1805,221 @@ function renderFileSettings() {
         <input id="import-file-input" type="file" accept=".csv,.xlsx,.xlsm,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" hidden>
       </div>
       <div id="import-result" aria-live="polite"></div>
+      <div class="import-panel">
+        <div>
+          <strong>SAP-SDATA prüfen</strong>
+          <small>CSV oder Excel mit SDATA-Zeilen. P10 wird als Arbeitsbeginn, P20 als Arbeitsende gelesen; Lücken zwischen Arbeitssegmenten werden als Pause vorgeschlagen.</small>
+        </div>
+        <button id="sap-sdata-file" class="secondary compact-button" type="button">SAP-Datei auswählen</button>
+        <input id="sap-sdata-file-input" type="file" accept=".csv,.xlsx,.xlsm,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" hidden>
+      </div>
+      <div id="sap-sdata-result" class="sap-import-preview" aria-live="polite"></div>
     </div>
   `;
+}
+
+function bindSapSdataImportControls() {
+  const button = document.getElementById("sap-sdata-file");
+  const input = document.getElementById("sap-sdata-file-input");
+  button?.addEventListener("click", () => input?.click());
+  input?.addEventListener("change", async event => {
+    const file = event.currentTarget.files?.[0];
+    if (!file) return;
+    const output = document.getElementById("sap-sdata-result");
+    if (button) {
+      button.disabled = true;
+      button.textContent = "Prüfe ...";
+    }
+    try {
+      const payload = await fileToBase64(file);
+      state.sapSdataPreview = await api("preview_sap_sdata_file", file.name, payload);
+      renderSapSdataPreview();
+      notify(`SAP-Vorschau erstellt: ${file.name}`);
+    } catch (error) {
+      state.sapSdataPreview = null;
+      notify(error.message || String(error), "error");
+      if (output) output.innerHTML = `<div class="error-panel">${escapeHtml(error.message || String(error))}</div>`;
+    } finally {
+      event.currentTarget.value = "";
+      if (button) {
+        button.disabled = false;
+        button.textContent = "SAP-Datei auswählen";
+      }
+    }
+  });
+}
+
+function renderSapSdataPreview() {
+  const output = document.getElementById("sap-sdata-result");
+  const preview = state.sapSdataPreview;
+  if (!output || !preview) return;
+  if (!preview.days?.length) {
+    output.innerHTML = `<div class="empty">Keine verwertbaren SAP-SDATA-Ereignisse gefunden.</div>`;
+    return;
+  }
+  output.innerHTML = `
+    <section class="sap-preview-panel stack">
+      <div class="page-head compact">
+        <div>
+          <h3>SAP-SDATA Vorschau</h3>
+          <p>${escapeHtml(preview.source_name || preview.name || "SAP-Datei")} · Events ${Number(preview.events_read || 0)} · ignoriert ${Number(preview.rows_ignored || 0)}</p>
+        </div>
+        <div class="row-actions sap-preview-actions">
+          <button id="sap-sdata-toggle-selection" class="secondary compact-button" type="button">Alle abwählen</button>
+          <button id="sap-sdata-import-selected" type="button">Ausgewählte Tage importieren</button>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table class="sap-preview-table">
+          <thead><tr><th>Import</th><th>Datum</th><th>Status</th><th>Aktuell</th><th>SAP-Vorschlag</th></tr></thead>
+          <tbody>
+            ${preview.days.map(day => renderSapSdataDay(day)).join("")}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  `;
+  output.querySelectorAll(".sap-day-toggle").forEach(button => {
+    button.addEventListener("click", () => {
+      const details = document.getElementById(`sap-day-details-${button.dataset.date}`);
+      if (!details) return;
+      const open = details.hidden;
+      details.hidden = !open;
+      button.setAttribute("aria-expanded", open ? "true" : "false");
+      button.textContent = open ? "Details schließen" : "Details";
+    });
+  });
+  output.querySelectorAll(".sap-day-select").forEach(input => {
+    input.addEventListener("change", updateSapSelectionToggleLabel);
+  });
+  document.getElementById("sap-sdata-toggle-selection")?.addEventListener("click", toggleSapSdataSelection);
+  document.getElementById("sap-sdata-import-selected")?.addEventListener("click", importSelectedSapSdataDays);
+  updateSapSelectionToggleLabel();
+}
+
+function renderSapSdataDay(day) {
+  const disabled = !day.imported_segments?.length;
+  const checked = day.selected && !disabled ? "checked" : "";
+  const currentSummary = sapSegmentSummary(day.current_segments);
+  const importSummary = sapSegmentSummary(day.imported_segments);
+  return `
+    <tr class="sap-preview-row sap-status-${escapeHtml(day.status || "changed")}">
+      <td data-label="Import"><input type="checkbox" class="sap-day-select" value="${escapeHtml(day.date)}" ${checked} ${disabled ? "disabled" : ""}></td>
+      <td data-label="Datum"><strong>${escapeHtml(day.date)}</strong><small>${weekdayShort(day.date)}</small></td>
+      <td data-label="Status">
+        <span class="sap-status-pill">${escapeHtml(day.status_label || day.status || "")}</span>
+        <span class="sap-inline-comparison"><strong>Aktuell</strong>${currentSummary}</span>
+        <span class="sap-inline-comparison"><strong>SAP</strong>${importSummary}</span>
+      </td>
+      <td data-label="Aktuell">${currentSummary}</td>
+      <td data-label="SAP-Vorschlag">
+        ${importSummary}
+        <button class="secondary sap-day-toggle" type="button" data-date="${escapeHtml(day.date)}" aria-expanded="false">Details</button>
+      </td>
+    </tr>
+    <tr id="sap-day-details-${escapeHtml(day.date)}" class="sap-preview-details" hidden>
+      <td colspan="5">
+        <div class="sap-preview-detail-grid">
+          <section>
+            <h4>Aktuell im Programm</h4>
+            ${sapSegmentList(day.current_segments)}
+          </section>
+          <section>
+            <h4>Aus SAP-SDATA</h4>
+            ${sapSegmentList(day.imported_segments)}
+          </section>
+          <section>
+            <h4>Hinweise</h4>
+            ${day.warnings?.length ? `<ul>${day.warnings.map(warning => `<li>${escapeHtml(warning)}</li>`).join("")}</ul>` : `<p class="muted">Keine Hinweise.</p>`}
+          </section>
+          <section>
+            <h4>SAP-Events</h4>
+            ${sapEventList(day.events)}
+          </section>
+        </div>
+      </td>
+    </tr>
+  `;
+}
+
+function toggleSapSdataSelection() {
+  const boxes = Array.from(document.querySelectorAll(".sap-day-select:not(:disabled)"));
+  if (!boxes.length) return;
+  const allChecked = boxes.every(input => input.checked);
+  boxes.forEach(input => {
+    input.checked = !allChecked;
+  });
+  updateSapSelectionToggleLabel();
+}
+
+function updateSapSelectionToggleLabel() {
+  const button = document.getElementById("sap-sdata-toggle-selection");
+  if (!button) return;
+  const boxes = Array.from(document.querySelectorAll(".sap-day-select:not(:disabled)"));
+  const allChecked = boxes.length > 0 && boxes.every(input => input.checked);
+  button.textContent = allChecked ? "Alle abwählen" : "Alle auswählen";
+}
+
+async function importSelectedSapSdataDays() {
+  const preview = state.sapSdataPreview;
+  if (!preview) return;
+  const selectedDates = Array.from(document.querySelectorAll(".sap-day-select:checked")).map(input => input.value);
+  if (!selectedDates.length) {
+    notify("Bitte mindestens einen SAP-Tag auswählen.", "error");
+    return;
+  }
+  const button = document.getElementById("sap-sdata-import-selected");
+  if (button) {
+    button.disabled = true;
+    button.textContent = "Importiere ...";
+  }
+  try {
+    const result = await api("import_sap_sdata_preview", {
+      source_name: `SAP SDATA ${preview.source_name || preview.name || ""}`.trim(),
+      days: preview.days,
+      selected_dates: selectedDates,
+    });
+    const warningText = Number(result.warnings || 0) ? ` · Warnungen ${result.warnings}` : "";
+    const logButton = result.log_path ? `<button id="open-sap-import-log" class="secondary" type="button" data-path="${escapeHtml(result.log_path)}">Protokoll öffnen</button>` : "";
+    const output = document.getElementById("sap-sdata-result");
+    if (output) {
+      output.innerHTML = `<div class="success-panel"><strong>SAP-SDATA importiert</strong><small>${escapeHtml(result.start_date)} bis ${escapeHtml(result.end_date)} · Segmente ${Number(result.segments || 0)}${escapeHtml(warningText)} · Protokoll ${escapeHtml(result.log_name || "")}</small>${logButton}</div>`;
+      document.getElementById("open-sap-import-log")?.addEventListener("click", async event => {
+        try {
+          await api("open_import_log", event.currentTarget.dataset.path);
+        } catch (error) {
+          notify(error.message || String(error), "error");
+        }
+      });
+    }
+    state.sapSdataPreview = null;
+    notify("SAP-SDATA importiert");
+    await refreshCurrentView({ silent: true });
+  } catch (error) {
+    notify(error.message || String(error), "error");
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.textContent = "Ausgewählte Tage importieren";
+    }
+  }
+}
+
+function sapSegmentSummary(segments = []) {
+  if (!segments.length) return `<span class="muted">keine Segmente</span>`;
+  return segments
+    .map(segment => `${escapeHtml(segmentTypeLabel(segment.type))} ${escapeHtml(timeShort(segment.start_time))}-${escapeHtml(timeShort(segment.end_time))}`)
+    .join("<br>");
+}
+
+function sapSegmentList(segments = []) {
+  if (!segments.length) return `<p class="muted">Keine Segmente.</p>`;
+  return `<ul>${segments.map(segment => `<li>${escapeHtml(segmentTypeLabel(segment.type))}: ${escapeHtml(timeShort(segment.start_time))} bis ${escapeHtml(timeShort(segment.end_time))}${segment.location ? ` · ${escapeHtml(locationLabel(segment.location))}` : ""}</li>`).join("")}</ul>`;
+}
+
+function sapEventList(events = []) {
+  if (!events.length) return `<p class="muted">Keine Events.</p>`;
+  return `<ul>${events.map(event => `<li>${escapeHtml(event.event_type)} · ${escapeHtml(event.time?.slice(0, 5) || "")} · Zeile ${Number(event.row_number || 0)}</li>`).join("")}</ul>`;
 }
 
 function renderResetSettings() {
@@ -1649,6 +2190,14 @@ function absenceCountdownDetail(nextAbsence) {
   ].join("");
 }
 
+function officeQuotaPeriodLabel(stats) {
+  if (!stats) return "Nicht verfügbar";
+  const start = stats.start_date || "";
+  const end = stats.configured_end_date || stats.end_date || "";
+  const countedEnd = stats.end_date && stats.end_date !== end ? `, gezählt bis ${stats.end_date}` : "";
+  return `${start || "Start"} bis ${end || "heute"}${countedEnd}`;
+}
+
 function dashboardMetric(metricConfig) {
   const active = state.dashboardDetailKey === metricConfig.key;
   return `<article class="${dashboardCardClass(metricConfig, active)}" data-dashboard-card="${escapeHtml(metricConfig.key)}">
@@ -1705,6 +2254,14 @@ function htmlElement(html) {
 function sameStringList(left, right) {
   if (left.length !== right.length) return false;
   return left.every((value, index) => value === right[index]);
+}
+
+function normalizeSearchText(value) {
+  return String(value || "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/ß/g, "ss");
 }
 
 async function api(name, ...args) {
@@ -1778,6 +2335,8 @@ async function refreshCurrentView({ silent = false } = {}) {
 function shouldAutoRefresh() {
   const active = document.activeElement;
   if (document.hidden) return false;
+  if (state.calendarDetailDate || state.entryEditDate) return false;
+  if (document.querySelector(".modal-backdrop")) return false;
   if (active?.closest?.("form")) return false;
   if (active?.matches?.("input, select, textarea, [contenteditable='true']")) return false;
   return ["dashboard", "calendar", "entries", "statistics", "vacation"].includes(state.view);

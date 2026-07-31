@@ -71,15 +71,27 @@ class WorktimeApi:
                 "location": _display_location(summary.location),
                 "location_stats": calculations.get_location_statistics(conn, today),
                 "settings": _settings_for_ui(settings),
-                "live_day": _live_day_info(summary.balance_minutes, summary.target_minutes, open_segment, bool(first_work)),
+                "live_day": _live_day_info(
+                    summary.balance_minutes,
+                    summary.target_minutes,
+                    summary.break_minutes,
+                    settings,
+                    open_segment,
+                    bool(first_work),
+                ),
             }
 
-    def calendar_month(self, year: int, month: int) -> dict[str, Any]:
+    def calendar_month(self, year: int, month: int, live_only: bool = False) -> dict[str, Any]:
         with self._locked_conn() as conn:
             last_day = calendar.monthrange(int(year), int(month))[1]
             start = f"{int(year):04d}-{int(month):02d}-01"
             end = f"{int(year):04d}-{int(month):02d}-{last_day:02d}"
-            calculations.recalculate_range(conn, start, end)
+            if live_only:
+                today = today_str()
+                if start <= today <= end:
+                    calculations.recalculate_day(conn, today)
+            else:
+                calculations.recalculate_range(conn, start, end)
             summaries = {row["date"]: dict(row) for row in database.get_day_summaries_between(conn, start, end)}
             day_types: dict[str, list[dict[str, Any]]] = {}
             for row in database.get_day_types_between(conn, start, end):
@@ -210,9 +222,14 @@ class WorktimeApi:
             calculations.recalculate_day(conn, date)
             return self.day_detail(date)
 
-    def entries(self, start_date: str, end_date: str) -> dict[str, Any]:
+    def entries(self, start_date: str, end_date: str, live_only: bool = False) -> dict[str, Any]:
         with self._locked_conn() as conn:
-            calculations.recalculate_range(conn, start_date, end_date)
+            if live_only:
+                today = today_str()
+                if start_date <= today <= end_date:
+                    calculations.recalculate_day(conn, today)
+            else:
+                calculations.recalculate_range(conn, start_date, end_date)
             summaries = database.get_day_summaries_between(conn, start_date, end_date)
             notes = database.get_notes_between(conn, start_date, end_date)
             segments_by_date: dict[str, list[Any]] = {}
@@ -239,10 +256,14 @@ class WorktimeApi:
                 )
             return {"rows": rows}
 
-    def statistics(self, year: int) -> dict[str, Any]:
+    def statistics(self, year: int, live_only: bool = False) -> dict[str, Any]:
         with self._locked_conn() as conn:
             stats_range = calculations.get_statistics_date_range(conn, int(year))
-            if stats_range:
+            if live_only:
+                today = today_str()
+                if int(year) == Date.today().year and stats_range and stats_range[0] <= today <= stats_range[1]:
+                    calculations.recalculate_day(conn, today)
+            elif stats_range:
                 calculations.recalculate_range(conn, *stats_range)
             return calculations.get_year_statistics(conn, int(year))
 
@@ -352,6 +373,47 @@ class WorktimeApi:
                 except FileNotFoundError:
                     pass
 
+    def preview_sap_sdata_file(self, file_name: str, payload_base64: str) -> dict[str, Any]:
+        suffix = Path(file_name or "").suffix.lower()
+        if suffix not in {".csv", ".xlsx", ".xlsm"}:
+            raise ValueError("SAP-SDATA-Import unterstützt CSV oder Excel (.xlsx).")
+        try:
+            payload = base64.b64decode(payload_base64, validate=True)
+        except (binascii.Error, ValueError) as exc:
+            raise ValueError("SAP-SDATA-Datei konnte nicht gelesen werden.") from exc
+        if not payload:
+            raise ValueError("SAP-SDATA-Datei ist leer.")
+
+        tmp_path: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(prefix="worktime-sap-sdata-", suffix=suffix, delete=False) as handle:
+                handle.write(payload)
+                tmp_path = Path(handle.name)
+            with self._locked_conn() as conn:
+                preview = export.preview_sdata_file(conn, tmp_path, source_name=Path(file_name).name)
+            return {"ok": True, "name": Path(file_name).name, **preview}
+        finally:
+            if tmp_path:
+                try:
+                    tmp_path.unlink()
+                except FileNotFoundError:
+                    pass
+
+    def import_sap_sdata_preview(self, payload: dict[str, Any]) -> dict[str, Any]:
+        days = payload.get("days")
+        selected_dates = payload.get("selected_dates")
+        if not isinstance(days, list) or not isinstance(selected_dates, list):
+            raise ValueError("SAP-SDATA-Auswahl konnte nicht gelesen werden.")
+        source_name = str(payload.get("source_name") or "SAP SDATA Import")
+        with self._locked_conn() as conn:
+            result = export.import_sdata_preview(
+                conn,
+                days,
+                [str(value) for value in selected_dates],
+                source_name=source_name,
+            )
+        return {"ok": True, "name": source_name, **result}
+
     def open_import_log(self, log_path: str) -> dict[str, Any]:
         path = Path(log_path).expanduser().resolve()
         log_root = export.IMPORT_LOG_DIR.resolve()
@@ -418,12 +480,23 @@ def _display_location(value: str | None) -> str:
     return {"OFFICE": "Büro", "HOME": "Homeoffice", "MIXED": "Gemischt", "UNKNOWN": "Unbekannt"}.get(value or "", "Unbekannt")
 
 
-def _live_day_info(balance_minutes: int, target_minutes: int, open_segment, has_work_today: bool) -> dict[str, Any]:
+def _live_day_info(
+    balance_minutes: int,
+    target_minutes: int,
+    break_minutes: int,
+    settings: dict[str, str],
+    open_segment,
+    has_work_today: bool,
+    now: datetime | None = None,
+) -> dict[str, Any]:
     note = "Der laufende Tag ist noch nicht im Gleitzeitkonto enthalten."
     zero_time = None
+    now = now or datetime.now()
     if open_segment and open_segment["type"] == "WORK":
         if balance_minutes < 0:
-            zero_time = (datetime.now() + timedelta(minutes=abs(balance_minutes))).strftime("%H:%M")
+            remaining_break = _remaining_minimum_break_minutes(break_minutes, settings)
+            remaining_clock_minutes = abs(balance_minutes) + remaining_break
+            zero_time = (now + timedelta(minutes=remaining_clock_minutes)).strftime("%H:%M")
             detail = f"Wenn du weiter arbeitest, erreichst du heute gegen {zero_time} Uhr ungefähr ±0."
         else:
             detail = "Du bist heute live bereits im Plus."
@@ -443,6 +516,14 @@ def _live_day_info(balance_minutes: int, target_minutes: int, open_segment, has_
         "has_open_segment": bool(open_segment),
         "open_type": open_segment["type"] if open_segment else None,
     }
+
+
+def _remaining_minimum_break_minutes(current_break_minutes: int, settings: dict[str, str]) -> int:
+    try:
+        configured_break = int(settings.get("daily_break_minutes", "0") or "0")
+    except ValueError:
+        configured_break = 0
+    return max(0, configured_break - max(0, int(current_break_minutes)))
 
 
 def _next_absence_countdown(conn, today: str, settings: dict[str, str]) -> dict[str, Any] | None:
@@ -510,6 +591,7 @@ def _settings_for_ui(settings: dict[str, str]) -> dict[str, str]:
     result["daily_break_minutes"] = str(break_minutes)
     result["office_baseline_days"] = _setting_float_for_ui(result.get("office_baseline_days", "0"))
     result["homeoffice_baseline_days"] = _setting_float_for_ui(result.get("homeoffice_baseline_days", "0"))
+    result["office_quota_target_percent"] = _setting_float_for_ui(result.get("office_quota_target_percent", "50"))
     result["office_start_buffer_minutes"] = _setting_int_for_ui(result.get("office_start_buffer_minutes", "0"))
     result["home_start_buffer_minutes"] = _setting_int_for_ui(result.get("home_start_buffer_minutes", "0"))
     result["office_end_buffer_minutes"] = _setting_int_for_ui(result.get("office_end_buffer_minutes", "0"))
@@ -552,6 +634,14 @@ def _normalize_settings_input(values: dict[str, Any]) -> dict[str, str]:
     ):
         if key in normalized:
             normalized[key] = _normalize_nonnegative_decimal(normalized[key], label)
+    if "office_quota_target_percent" in normalized:
+        normalized["office_quota_target_percent"] = _normalize_percent(
+            normalized["office_quota_target_percent"],
+            "Officequote-Schwelle",
+        )
+    for key in ("office_quota_custom_start", "office_quota_custom_end"):
+        if normalized.get(key):
+            parse_date(normalized[key])
     if "initial_flextime_hours" in normalized:
         minutes = parse_decimal_hours_to_minutes(
             normalized.pop("initial_flextime_hours"),
@@ -567,6 +657,7 @@ def _normalize_settings_input(values: dict[str, Any]) -> dict[str, str]:
         "automatic_recovery_enabled",
         "auto_resume_after_break_enabled",
         "auto_resume_after_absence_enabled",
+        "preload_app_on_tracker_start",
     ):
         if key in normalized:
             normalized[key] = _normalize_bool_setting(normalized[key])
@@ -576,6 +667,7 @@ def _normalize_settings_input(values: dict[str, Any]) -> dict[str, str]:
         ("work_popup_timing", {"startup", "work_end", "custom"}),
         ("daily_info_popup_mode", {"off", "work_end", "custom"}),
         ("dashboard_absence_countdown_mode", {"workdays", "calendar_days"}),
+        ("office_quota_period_mode", {"all", "current_year", "rolling_365", "custom"}),
     ):
         if key in normalized:
             normalized[key] = _normalize_choice_setting(normalized[key], allowed, key)
@@ -619,6 +711,16 @@ def _normalize_auto_refresh_interval(raw_value: str) -> str:
     if value > 3600:
         raise ValueError("Aktualisierungsintervall darf maximal 3600 Sekunden betragen.")
     return str(value)
+
+
+def _normalize_percent(raw_value: str, label: str) -> str:
+    try:
+        value = float(str(raw_value or "0").replace(",", "."))
+    except ValueError as exc:
+        raise ValueError(f"{label} muss eine Zahl sein.") from exc
+    if not 0 <= value <= 100:
+        raise ValueError(f"{label} muss zwischen 0 und 100 liegen.")
+    return f"{value:.2f}".rstrip("0").rstrip(".")
 
 
 def _normalize_workday_weekdays(raw_value: str) -> list[int]:

@@ -217,3 +217,41 @@ def test_api_imports_uploaded_base64_file_without_native_dialog(tmp_path):
     assert result["segments"] == 1
     with database.connect(api.db_path) as conn:
         assert database.get_segments_for_date(conn, "2026-07-06")[0]["location"] == "HOME"
+
+
+def test_sap_sdata_preview_pairs_events_and_imports_selected_days(tmp_path):
+    conn = make_conn(tmp_path, "sap.db")
+    path = tmp_path / "sap.csv"
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=["SDATA"], delimiter=";")
+        writer.writeheader()
+        for event_type, log_time in (
+            ("P10", "100000"),
+            ("P20", "120000"),
+            ("P10", "130000"),
+            ("P20", "170000"),
+        ):
+            writer.writerow({"SDATA": sap_sdata(event_type, "20260101", log_time)})
+
+    preview = export.preview_sdata_file(conn, path)
+
+    day = preview["days"][0]
+    assert day["date"] == "2026-01-01"
+    assert [segment["type"] for segment in day["imported_segments"]] == ["WORK", "BREAK", "WORK"]
+    assert [segment["location"] for segment in day["imported_segments"]] == ["OFFICE", "", "OFFICE"]
+    assert [(segment["start_time"], segment["end_time"]) for segment in day["imported_segments"]] == [
+        ("10:00:00", "12:00:00"),
+        ("12:00:00", "13:00:00"),
+        ("13:00:00", "17:00:00"),
+    ]
+
+    result = export.import_sdata_preview(conn, preview["days"], ["2026-01-01"], source_name="SAP-Test")
+    segments = database.get_segments_for_date(conn, "2026-01-01")
+
+    assert result["segments"] == 3
+    assert [segment["type"] for segment in segments] == ["WORK", "BREAK", "WORK"]
+    assert [segment["location"] for segment in segments] == ["OFFICE", None, "OFFICE"]
+
+
+def sap_sdata(event_type: str, log_date: str, log_time: str) -> str:
+    return f"PP2CLNT080{event_type}0131{log_date}{log_time}{log_date}{log_time}        00002634"

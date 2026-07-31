@@ -63,6 +63,7 @@ def main() -> None:
         width=1440,
         height=860,
         min_size=(1080, 680),
+        hidden="--hidden" in sys.argv,
         background_color="#f8fafc",
     )
     api.attach_window(window)

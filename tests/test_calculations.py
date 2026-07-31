@@ -364,6 +364,31 @@ def test_location_statistics_marks_under_50_percent_office(tmp_path):
     assert stats["office_requirement_met"] is False
 
 
+def test_location_statistics_uses_configured_year_period_and_threshold(tmp_path):
+    conn = make_conn(tmp_path)
+    database.set_settings(
+        conn,
+        {
+            "office_baseline_days": "10",
+            "homeoffice_baseline_days": "0",
+            "office_quota_period_mode": "current_year",
+            "office_quota_target_percent": "60",
+        },
+    )
+    database.add_segment(conn, "2025-07-02", "WORK", "08:00:00", "16:00:00", "OFFICE")
+    database.add_segment(conn, "2026-07-02", "WORK", "08:00:00", "16:00:00", "HOME")
+    calculations.recalculate_range(conn, "2025-07-02", "2026-07-02")
+
+    stats = calculations.get_location_statistics(conn, "2026-07-02")
+
+    assert stats["start_date"] == "2026-01-01"
+    assert stats["configured_end_date"] == "2026-12-31"
+    assert stats["target_percent"] == 60.0
+    assert stats["manual_office_days"] == 0.0
+    assert stats["office_percent"] == 0.0
+    assert stats["office_requirement_met"] is False
+
+
 def test_tracking_start_date_ignores_days_before_start(tmp_path):
     conn = make_conn(tmp_path)
     database.set_setting(conn, "tracking_start_date", "2026-07-01")

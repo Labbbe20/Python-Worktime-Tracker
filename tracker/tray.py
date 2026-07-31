@@ -16,6 +16,19 @@ from tracker.notify import NotificationCenter
 from tracker.recorder import RecorderEvent, WorktimeRecorder
 
 
+def preload_app_window(enabled: bool, logger: logging.Logger | None = None) -> None:
+    """Warm up the pywebview app in a hidden process for faster first opening."""
+
+    if not enabled or another_instance_is_running():
+        return
+    logger = logger or logging.getLogger("worktime.tracker.tray")
+    try:
+        subprocess.Popen(_app_launch_command(hidden=True), cwd=str(_launch_cwd()))
+        logger.info("App-Fenster wird im Hintergrund vorgeladen")
+    except Exception:
+        logger.debug("App-Fenster konnte nicht vorgeladen werden", exc_info=True)
+
+
 def run_tray(recorder: WorktimeRecorder, notifier: NotificationCenter, logger: logging.Logger | None = None) -> None:
     logger = logger or logging.getLogger("worktime.tracker.tray")
     try:
@@ -133,7 +146,7 @@ def _load_icon(image_module, draw_module):
     return _create_icon(image_module, draw_module)
 
 
-def _app_launch_command(view: str | None = None) -> list[str]:
+def _app_launch_command(view: str | None = None, *, hidden: bool = False) -> list[str]:
     if getattr(sys, "frozen", False):
         command = [sys.executable, "--app"]
     else:
@@ -141,6 +154,8 @@ def _app_launch_command(view: str | None = None) -> list[str]:
         command = [_windowed_python_executable(), str(script)]
         if script.name == "main.pyw" and script.parent == PROJECT_ROOT:
             command.append("--app")
+    if hidden:
+        command.append("--hidden")
     if view:
         command.extend(["--view", view])
     return command

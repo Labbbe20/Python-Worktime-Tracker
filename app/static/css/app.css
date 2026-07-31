@@ -116,6 +116,14 @@ button.secondary {
   border-color: var(--border);
 }
 
+button.compact-button {
+  width: auto;
+  min-width: 0;
+  min-height: 36px;
+  padding: 6px 10px;
+  white-space: nowrap;
+}
+
 button.danger {
   background: var(--danger);
 }
@@ -809,6 +817,38 @@ legend {
   flex: 0 0 auto;
 }
 
+.entries-filterbar {
+  margin-top: -4px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-2);
+}
+
+.entries-filterbar label {
+  min-width: min(150px, 100%);
+}
+
+.entries-filterbar input,
+.entries-filterbar select {
+  background: var(--surface);
+}
+
+.filter-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  align-items: center;
+  margin: -4px 0 12px;
+  color: var(--muted);
+  font-size: 0.9rem;
+  font-weight: 700;
+}
+
+.filter-summary strong {
+  color: var(--text);
+}
+
 .field-wide,
 .form-actions {
   grid-column: 1 / -1;
@@ -1404,6 +1444,10 @@ td.row-actions > button + button {
   font-weight: 600;
 }
 
+.import-panel .compact-button {
+  justify-self: end;
+}
+
 .error-panel {
   justify-content: flex-start;
   border-color: color-mix(in srgb, var(--danger), var(--border) 50%);
@@ -1414,6 +1458,113 @@ td.row-actions > button + button {
 .success-panel {
   display: grid;
   justify-content: start;
+}
+
+.sap-preview-panel {
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.sap-preview-table td {
+  vertical-align: top;
+}
+
+.sap-preview-row {
+  transition: background 180ms var(--ease-out);
+}
+
+.sap-preview-row.sap-status-same {
+  background: color-mix(in srgb, var(--success), transparent 92%);
+}
+
+.sap-preview-row.sap-status-changed {
+  background: color-mix(in srgb, var(--warning), transparent 92%);
+}
+
+.sap-preview-row.sap-status-warning {
+  background: color-mix(in srgb, var(--warning), transparent 84%);
+}
+
+.sap-preview-row.sap-status-error {
+  background: color-mix(in srgb, var(--danger), transparent 90%);
+}
+
+.sap-status-pill {
+  display: inline-flex;
+  min-height: 28px;
+  align-items: center;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  font-size: 0.86rem;
+  font-weight: 800;
+}
+
+.sap-status-same .sap-status-pill {
+  background: var(--balance-ok-bg);
+  color: var(--balance-ok-text);
+}
+
+.sap-status-changed .sap-status-pill,
+.sap-status-warning .sap-status-pill {
+  background: var(--balance-warning-bg);
+  color: var(--balance-warning-text);
+}
+
+.sap-status-error .sap-status-pill {
+  background: var(--balance-danger-bg);
+  color: var(--balance-danger-text);
+}
+
+.sap-inline-comparison {
+  display: block;
+  margin-top: 6px;
+  font-size: 0.9rem;
+  color: var(--muted);
+}
+
+.sap-inline-comparison strong {
+  display: inline-block;
+  min-width: 54px;
+  margin-right: 6px;
+  color: var(--text);
+}
+
+.sap-preview-actions {
+  justify-content: flex-end;
+}
+
+.sap-day-toggle {
+  margin-top: 8px;
+}
+
+.sap-preview-details td {
+  background: var(--surface-2);
+}
+
+.sap-preview-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.sap-preview-detail-grid section {
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.sap-preview-detail-grid h4 {
+  margin: 0 0 8px;
+}
+
+.sap-preview-detail-grid ul {
+  margin: 0;
+  padding-left: 18px;
 }
 
 .stack {
@@ -1905,6 +2056,10 @@ td.row-actions > button + button {
   .day-label {
     display: none;
   }
+
+  .sap-preview-detail-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 @media (max-width: 520px) {
@@ -1966,6 +2121,10 @@ td.row-actions > button + button {
   .day-tile {
     border-left-width: 4px;
     font-size: 13px;
+  }
+
+  .sap-preview-detail-grid {
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 

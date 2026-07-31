@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from datetime import date as Date
+from datetime import datetime
 from datetime import timedelta
 
-from app.api import WorktimeApi
+from app.api import WorktimeApi, _live_day_info
 from common import database
 
 
@@ -58,6 +59,37 @@ def test_api_saves_auto_refresh_interval(tmp_path):
     result = api.save_settings({"auto_refresh_interval_seconds": "300"})
 
     assert result["settings"]["auto_refresh_interval_seconds"] == "300"
+
+
+def test_api_saves_office_quota_and_preload_settings(tmp_path):
+    db_path = tmp_path / "database.db"
+    api = WorktimeApi(db_path)
+
+    result = api.save_settings(
+        {
+            "office_quota_target_percent": "60,5",
+            "office_quota_period_mode": "rolling_365",
+            "preload_app_on_tracker_start": "0",
+        }
+    )
+
+    assert result["settings"]["office_quota_target_percent"] == "60.5"
+    assert result["settings"]["office_quota_period_mode"] == "rolling_365"
+    assert result["settings"]["preload_app_on_tracker_start"] == "0"
+
+
+def test_live_day_zero_time_includes_remaining_minimum_break():
+    result = _live_day_info(
+        balance_minutes=-468,
+        target_minutes=468,
+        break_minutes=5,
+        settings={"daily_break_minutes": "45"},
+        open_segment={"type": "WORK"},
+        has_work_today=True,
+        now=datetime(2026, 7, 6, 8, 5),
+    )
+
+    assert result["zero_time"] == "16:33"
 
 
 def test_dashboard_reports_next_absence_countdown_with_workdays(tmp_path):

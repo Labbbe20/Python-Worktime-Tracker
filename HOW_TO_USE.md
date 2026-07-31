@@ -112,10 +112,12 @@ Hinweis Windows: pywebview nutzt üblicherweise Microsoft Edge WebView2. Auf akt
 - Der `Anfangssaldo Gleitzeit in Stunden` wird als Basis zum Saldo ab Startdatum addiert. Positive und negative Kommazahlen mit Komma oder Punkt sind erlaubt, z. B. `50,89`, `-3,75`, `12.5`.
 - Offene, noch laufende Segmente werden live im Dashboard angezeigt, aber nicht ins Gleitzeitkonto und nicht in den Monats-Carry-over eingerechnet.
 - Beim Herunterfahren versucht Windows direkt Feierabend zu melden. Falls Windows dieses Ereignis nicht zuverlässig liefert, wird beim nächsten Start automatisch mit dem letzten gespeicherten Tracker-Zeitpunkt vom Vortag geschlossen. Nur wenn kein passender Zeitstempel vorhanden ist, erscheint der Nachtragen-Dialog.
-- Die Officequote im Dashboard zählt getrackte Büro-/Homeoffice-Tage plus manuelle Nachtragswerte. Gemischte Tage zählen jeweils halb zu Büro und Homeoffice.
+- Die Officequote im Dashboard zählt getrackte Büro-/Homeoffice-Tage plus manuelle Nachtragswerte. Gemischte Tage zählen jeweils halb zu Büro und Homeoffice. Zeitraum und Mindestquote sind unter `Standort & Puffer` einstellbar.
 - Die gebündelte Windows-Exe und die App verwenden `app/static/icons/app.ico` als Symbol.
 - Backups werden ausschließlich manuell ausgelöst und lokal in `data/backups/` abgelegt.
 - Exporte enthalten Rohdaten (`SEGMENT`, `ABWESENHEIT`, `NOTIZ`) plus berechnete Tages-Summen. Excel-Dateien öffnen zuerst mit dem lesbaren Blatt `Übersicht`; die Detailblätter und `Importdaten` bleiben importierbar. Als Bezug gilt das Datum, technische Datenbank-IDs werden in neuen Exporten nicht benötigt. CSV- und Excel-Dateien aus diesem Export können über `Backup & Export` wieder importiert werden; Tages-Summen werden beim Import ignoriert und anschließend neu berechnet.
+- SAP-SDATA-Dateien können unter `Backup & Export` zuerst als Vorschau geprüft werden. `P10` wird als Arbeitsbeginn, `P20` als Arbeitsende gelesen; Lücken zwischen zwei Arbeitssegmenten werden als Pause vorgeschlagen. Importiert werden nur die ausgewählten Tage, danach wird wie beim normalen Import ein HTML-Protokoll geschrieben.
+- In `Einträge` kannst du die Liste zusätzlich filtern: Tagesart, Standort, Saldo, laufende/abgeschlossene Tage, Notizen sowie Arbeitszeit größer/kleiner als eine Stundenangabe.
 
 ## Bedienung
 
@@ -145,9 +147,10 @@ In der App unter `Einstellungen` sind die Optionen in aufklappbare Kacheln grupp
 - Startdatum der Zeiterfassung, z. B. `2026-07-01`
 - Anfangssaldo Gleitzeit in Stunden, z. B. `12,5`, `50.89` oder `-3,75`
 - manuelle Büro-/Homeoffice-Tage für Zeiten vor dem Tracking
-- Automatisierung: Autostart, automatischer Arbeitsbeginn, automatischer Feierabend, automatische Wiederherstellung, automatisches Fortsetzen nach Pause/Abwesenheit und Ansichts-Aktualisierungsintervall
+- Automatisierung: Autostart, automatischer Arbeitsbeginn, automatischer Feierabend, automatische Wiederherstellung, automatisches Fortsetzen nach Pause/Abwesenheit, App-Vorladen und Ansichts-Aktualisierungsintervall
 - Standort-Ziele, z. B. `intranet.firma.local`, `intranet.firma.local:443` oder `https://intranet.firma.local`
 - Timeout in Millisekunden
+- Officequote: Mindestquote und Zeitraum (`Alles seit Trackingstart`, aktuelles Kalenderjahr, letzte 365 Tage oder eigener Zeitraum)
 - Startpuffer je Standort: Büro und Homeoffice können beim automatischen Arbeitsbeginn um eine feste Minutenanzahl vorverlegt werden
 - Arbeitsende-Puffer je Standort: Büro und Homeoffice können beim automatischen Feierabend um Minuten nach hinten verschoben werden
 - Popup-Regeln für Arbeitsbeginn, Arbeitsende und Tagesinfo
@@ -165,6 +168,7 @@ In `Einstellungen` → `Automatisierung` kannst du festlegen, was der Tracker se
 - `Offene Vortagssegmente automatisch schließen`: nutzt beim nächsten Start den letzten Tracker-Zeitstempel, falls Windows kein Shutdown-Ereignis geliefert hat.
 - `Nach Pause automatisch weiterarbeiten`: startet nach `Pause beenden` automatisch wieder Arbeit.
 - `Nach Abwesenheit automatisch weiterarbeiten`: startet nach `Abwesenheit beenden` automatisch wieder Arbeit.
+- `App-Fenster im Hintergrund vorladen`: startet die Oberfläche beim Tracker-Start versteckt, damit `App öffnen` unter Windows schneller reagiert.
 - `Ansicht automatisch aktualisieren`: legt fest, wie oft die sichtbare Ansicht im Hintergrund aktualisiert wird. 0/Aus deaktiviert den automatischen Refresh; Formulare und aktive Eingabefelder werden dabei nicht unterbrochen.
 
 Wenn du lieber komplett manuell tracken möchtest, schaltest du insbesondere `Arbeitsbeginn automatisch erfassen`, `Arbeitsende automatisch beim Herunterfahren erfassen` und die beiden `automatisch weiterarbeiten`-Optionen aus.
@@ -194,7 +198,7 @@ Automatische Tests:
 python3 -m pytest
 ```
 
-Getestet werden Datenbank-/Berechnungslogik, Pausenzeit/Arbeitstage, Startdatum/Anfangssaldo, Officequote, Gleitzeit-Farbstatus, Standortcheck, macOS-sichere Notification-Queue, Launcher und HTML-Log-Erzeugung.
+Getestet werden Datenbank-/Berechnungslogik, Pausenzeit/Arbeitstage, Startdatum/Anfangssaldo, Officequote, SAP-SDATA-Import, Gleitzeit-Farbstatus, Standortcheck, macOS-sichere Notification-Queue, Launcher und HTML-Log-Erzeugung.
 
 ## Manuelle Testanleitung
 
@@ -211,14 +215,15 @@ Getestet werden Datenbank-/Berechnungslogik, Pausenzeit/Arbeitstage, Startdatum/
 9. In den Einstellungen die Kacheln `Arbeitsmodell`, `Startwerte`, `Standort & Puffer`, `Backup & Export` und `Zurücksetzen` öffnen und schließen.
 10. `Pausenzeit`, `Arbeitstage`, `Startdatum der Zeiterfassung`, `Anfangssaldo Gleitzeit in Stunden`, manuelle Büro-/Homeoffice-Tage und Startpuffer je Standort testen.
 11. Dashboard und Statistiken prüfen: Gleitzeitstand soll als Badge grün/orange/rot erscheinen, Dashboard-Kacheln sollen Details aufklappen.
-12. Dashboard `Officequote` prüfen: Büroanteil soll mit Details zu Büro, Homeoffice, getrackten und manuellen Tagen aufklappen.
+12. Dashboard `Officequote` prüfen: Büroanteil soll mit Zeitraum, Mindestquote, Büro, Homeoffice, getrackten und manuellen Tagen aufklappen.
 13. Im Kalender prüfen, dass links die Kalenderwochen stehen; dann einen Tag öffnen, Segmentzeiten ändern, Standort korrigieren und Notiz speichern.
-14. In `Einträge` eine Zeile über `Details` öffnen, Segment ändern/löschen und prüfen, dass die Liste aktualisiert wird.
+14. In `Einträge` suchen und Filter für Tagesart, Standort, Saldo, Status, Notizen sowie Arbeitszeit testen; danach eine Zeile über `Details` öffnen, Segment ändern/löschen und prüfen, dass die Liste aktualisiert wird.
 15. Backup über App oder Tray auslösen und Datei in `data/backups/` prüfen.
 16. Diagnose-Log öffnen und Suche/Sortierung im Browser testen.
 17. In `Urlaub und Abwesenheiten` Urlaub, Gleitzeit, Krankheit, Dienstreise oder Feiertags-Ausnahme mit Notiz eintragen und prüfen, dass darunter Zeitraum, Notiz, angerechnete Arbeitstage und Entfernen-Aktion erscheinen.
 18. Export in CSV, Excel und PDF ausführen; CSV oder Excel anschließend über `Daten importieren` testweise in eine Testdatenbank einlesen.
-19. Aus dem Tracker-Menü mehrmals `App öffnen`, `Urlaub und Abwesenheiten` und `Einstellungen` wählen. Es darf immer nur ein App-Fenster laufen.
+19. SAP-SDATA-Datei über `SAP-SDATA prüfen` laden, Unterschiede in der Vorschau prüfen, einzelne Tage abwählen und ausgewählte Tage importieren.
+20. Aus dem Tracker-Menü mehrmals `App öffnen`, `Urlaub und Abwesenheiten` und `Einstellungen` wählen. Es darf immer nur ein App-Fenster laufen.
 
 ### Windows Produktivtest
 

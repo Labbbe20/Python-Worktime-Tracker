@@ -18,7 +18,7 @@ from common.html_logger import HtmlLogHandler
 from tracker import autostart_windows, popups, shutdown_windows
 from tracker.notify import NotificationCenter
 from tracker.recorder import WorktimeRecorder
-from tracker.tray import run_tray
+from tracker.tray import preload_app_window, run_tray
 
 
 def configure_logging() -> logging.Logger:
@@ -78,6 +78,11 @@ def main() -> None:
         shutdown_listener.start()
     else:
         logger.info("Automatischer Feierabend beim Herunterfahren ist deaktiviert")
+
+    preload_app_window(
+        recorder.is_setting_enabled("preload_app_on_tracker_start"),
+        logger=logging.getLogger("worktime.tracker.tray"),
+    )
 
     try:
         run_tray(recorder, notifier, logger=logging.getLogger("worktime.tracker.tray"))

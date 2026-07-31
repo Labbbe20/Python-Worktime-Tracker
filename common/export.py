@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import json
+import re
 from datetime import date as Date
 from datetime import datetime, time, timedelta
 from pathlib import Path
@@ -340,6 +341,45 @@ def import_file(conn, file_path: str | Path, *, source_name: str | None = None) 
     return import_rows(conn, rows, source_name=source_name or path.name)
 
 
+def preview_sdata_file(conn, file_path: str | Path, *, source_name: str | None = None) -> dict[str, Any]:
+    """Parse SAP SDATA events and compare the derived segments with local data."""
+
+    path = Path(file_path)
+    if not path.exists():
+        raise FileNotFoundError(f"SAP-Datei nicht gefunden: {path}")
+    events, skipped = _read_sdata_events(path)
+    days = _build_sdata_preview_days(conn, events)
+    return {
+        "ok": True,
+        "source_name": source_name or path.name,
+        "events_read": len(events),
+        "rows_ignored": skipped,
+        "days": days,
+    }
+
+
+def import_sdata_preview(
+    conn,
+    days: list[dict[str, Any]],
+    selected_dates: list[str],
+    *,
+    source_name: str = "SAP SDATA Import",
+) -> dict[str, Any]:
+    """Import selected preview days by reusing the regular detailed importer."""
+
+    selected = set(selected_dates)
+    rows: list[dict[str, Any]] = []
+    for day in days:
+        date_text = parse_date(str(day.get("date", ""))).isoformat()
+        if date_text not in selected:
+            continue
+        for segment in day.get("imported_segments", []):
+            rows.append(_sdata_segment_import_row(date_text, segment))
+    if not rows:
+        raise ValueError("Keine SAP-SDATA-Tage für den Import ausgewählt.")
+    return import_rows(conn, rows, source_name=source_name)
+
+
 def import_rows(conn, rows: list[dict[str, Any]], *, source_name: str = "Manueller Import") -> dict[str, Any]:
     affected_dates: set[str] = set()
     prepared_rows: list[tuple[int, str, dict[str, Any]]] = []
@@ -458,6 +498,217 @@ def import_rows(conn, rows: list[dict[str, Any]], *, source_name: str = "Manuell
         if isinstance(exc, ValueError):
             raise ValueError(f"{exc} Import-Protokoll: {log_path}") from exc
         raise
+
+
+def _read_sdata_events(path: Path) -> tuple[list[dict[str, Any]], int]:
+    suffix = path.suffix.lower()
+    values: list[tuple[int, Any]] = []
+    if suffix == ".csv":
+        for index, row in enumerate(_read_csv_rows(path), start=2):
+            values.append((index, _sdata_value_from_row(row)))
+    elif suffix in {".xlsx", ".xlsm"}:
+        values = _read_xlsx_sdata_values(path)
+    else:
+        raise ValueError("SAP-SDATA-Import unterstützt CSV oder Excel (.xlsx).")
+
+    events: list[dict[str, Any]] = []
+    skipped = 0
+    for row_number, value in values:
+        event = _parse_sdata_value(value, row_number)
+        if event:
+            events.append(event)
+        else:
+            skipped += 1
+    events.sort(key=lambda item: (item["date"], item["time"], item["event_type"], item["row_number"]))
+    return events, skipped
+
+
+def _read_xlsx_sdata_values(path: Path) -> list[tuple[int, Any]]:
+    try:
+        from openpyxl import load_workbook
+    except ImportError as exc:
+        raise RuntimeError("SAP-SDATA-Excel-Import benoetigt openpyxl. Bitte requirements.txt installieren.") from exc
+
+    workbook = load_workbook(path, read_only=True, data_only=True)
+    values: list[tuple[int, Any]] = []
+    for sheet in workbook.worksheets:
+        for row_index, row in enumerate(sheet.iter_rows(values_only=True), start=1):
+            for value in row:
+                if value not in (None, ""):
+                    values.append((row_index, value))
+    return values
+
+
+def _sdata_value_from_row(row: dict[str, Any]) -> Any:
+    for key, value in row.items():
+        if str(key).strip().casefold() == "sdata":
+            return value
+    for value in row.values():
+        if value not in (None, ""):
+            return value
+    return ""
+
+
+def _parse_sdata_value(value: Any, row_number: int) -> dict[str, Any] | None:
+    compact = re.sub(r"\s+", "", str(value or ""))
+    if len(compact) < 45:
+        return None
+    event_type = compact[10:13]
+    if event_type not in {"P10", "P20"}:
+        return None
+    try:
+        log_date = datetime.strptime(compact[17:25], "%Y%m%d").date().isoformat()
+        log_time = datetime.strptime(compact[25:31], "%H%M%S").time().strftime("%H:%M:%S")
+        phys_date = datetime.strptime(compact[31:39], "%Y%m%d").date().isoformat()
+        phys_time = datetime.strptime(compact[39:45], "%H%M%S").time().strftime("%H:%M:%S")
+    except ValueError:
+        return None
+    return {
+        "source_system": compact[:10],
+        "event_type": event_type,
+        "terminal_id": compact[13:17],
+        "date": log_date,
+        "time": log_time,
+        "phys_date": phys_date,
+        "phys_time": phys_time,
+        "personnel_number": compact[45:],
+        "row_number": row_number,
+        "raw": str(value or ""),
+    }
+
+
+def _build_sdata_preview_days(conn, events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    events_by_date: dict[str, list[dict[str, Any]]] = {}
+    for event in events:
+        events_by_date.setdefault(event["date"], []).append(event)
+
+    days: list[dict[str, Any]] = []
+    for date_text in sorted(events_by_date):
+        calculations_before = _snapshot_date(conn, date_text)
+        imported_segments, warnings = _segments_from_sdata_events(events_by_date[date_text])
+        current_segments = [_preview_segment(dict(row)) for row in database.get_segments_for_date(conn, date_text)]
+        status = "same" if _segment_signatures(current_segments) == _segment_signatures(imported_segments) else "changed"
+        if warnings:
+            status = "warning"
+        if not imported_segments:
+            status = "error"
+        days.append(
+            {
+                "date": date_text,
+                "status": status,
+                "status_label": _sdata_status_label(status),
+                "selected": status in {"changed", "warning"},
+                "current_snapshot": calculations_before,
+                "current_segments": current_segments,
+                "imported_segments": imported_segments,
+                "events": events_by_date[date_text],
+                "warnings": warnings,
+            }
+        )
+    return days
+
+
+def _segments_from_sdata_events(events: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[str]]:
+    work_segments: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    open_start: dict[str, Any] | None = None
+    for event in sorted(events, key=lambda item: (item["time"], item["event_type"], item["row_number"])):
+        if event["event_type"] == "P10":
+            if open_start:
+                warnings.append(
+                    f"Start {open_start['time'][:5]} ohne Ende wurde durch Start {event['time'][:5]} ersetzt."
+                )
+            open_start = event
+            continue
+        if not open_start:
+            warnings.append(f"Ende {event['time'][:5]} ohne vorherigen Start wurde ignoriert.")
+            continue
+        if event["time"] <= open_start["time"]:
+            warnings.append(f"Ende {event['time'][:5]} liegt nicht nach Start {open_start['time'][:5]} und wurde ignoriert.")
+            open_start = None
+            continue
+        work_segments.append(
+            {
+                "type": "WORK",
+                "start_time": open_start["time"],
+                "end_time": event["time"],
+                "location": "OFFICE",
+                "source": "MANUAL",
+            }
+        )
+        open_start = None
+    if open_start:
+        warnings.append(f"Start {open_start['time'][:5]} ohne Ende wurde nicht importiert.")
+
+    segments: list[dict[str, Any]] = []
+    previous_end = ""
+    for segment in work_segments:
+        if previous_end and segment["start_time"] > previous_end:
+            segments.append(
+                {
+                    "type": "BREAK",
+                    "start_time": previous_end,
+                    "end_time": segment["start_time"],
+                    "location": "",
+                    "source": "MANUAL",
+                }
+            )
+        segments.append(segment)
+        previous_end = segment["end_time"]
+    return segments, warnings
+
+
+def _preview_segment(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "type": row.get("type", ""),
+        "start_time": row.get("start_time", ""),
+        "end_time": row.get("end_time") or "",
+        "location": row.get("location") or "",
+        "source": row.get("source") or "",
+    }
+
+
+def _segment_signatures(segments: list[dict[str, Any]]) -> list[tuple[str, str, str, str]]:
+    return [
+        (
+            str(segment.get("type") or ""),
+            str(segment.get("start_time") or "")[:5],
+            str(segment.get("end_time") or "")[:5],
+            str(segment.get("location") or ""),
+        )
+        for segment in segments
+    ]
+
+
+def _sdata_status_label(status: str) -> str:
+    return {
+        "same": "Gleich",
+        "changed": "Unterschied",
+        "warning": "Warnung",
+        "error": "Fehler",
+    }.get(status, status)
+
+
+def _sdata_segment_import_row(date_text: str, segment: dict[str, Any]) -> dict[str, Any]:
+    segment_type = str(segment.get("type") or "")
+    if segment_type not in SEGMENT_TYPES:
+        raise ValueError(f"{date_text}: SAP-Segmenttyp ist ungültig.")
+    start = normalize_time_input(str(segment.get("start_time") or ""))
+    end = normalize_time_input(str(segment.get("end_time") or ""))
+    location = str(segment.get("location") or "")
+    if segment_type != "WORK":
+        location = ""
+    elif location not in {"OFFICE", "HOME", "UNKNOWN"}:
+        location = "OFFICE"
+    return {
+        "Datensatz": "SEGMENT",
+        "Datum": date_text,
+        "Kategorie": segment_type,
+        "Beginn": start,
+        "Ende": end,
+        "Standort": location,
+        "Quelle": "MANUAL",
+    }
 
 
 def _clear_import_dates(conn, dates: set[str]) -> None:
