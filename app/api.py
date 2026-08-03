@@ -267,6 +267,25 @@ class WorktimeApi:
                 calculations.recalculate_range(conn, *stats_range)
             return calculations.get_year_statistics(conn, int(year))
 
+    def calculator_defaults(self) -> dict[str, Any]:
+        with self._locked_conn() as conn:
+            today = Date.today()
+            settings = database.get_settings(conn)
+            workdays = calculations.get_workday_indices(settings)
+            monday = today - timedelta(days=today.weekday())
+            targets = {
+                str(day): calculations.get_target_minutes_for_date(monday + timedelta(days=day), settings)
+                for day in range(7)
+            }
+            return {
+                "today": today.isoformat(),
+                "workday_weekdays": workdays,
+                "daily_break_minutes": _safe_nonnegative_int(settings.get("daily_break_minutes"), 0),
+                "weekly_target_hours": _setting_float_for_ui(settings.get("weekly_target_hours", "40")),
+                "target_minutes_by_weekday": targets,
+                "flextime_minutes": calculations.get_flextime_balance(conn, today.isoformat()),
+            }
+
     def settings(self) -> dict[str, str]:
         with self._locked_conn() as conn:
             return _settings_for_ui(database.get_settings(conn))
@@ -777,6 +796,14 @@ def _setting_int_for_ui(raw_value: str) -> str:
     except ValueError:
         value = 0
     return str(max(0, value))
+
+
+def _safe_nonnegative_int(raw_value: Any, default: int) -> int:
+    try:
+        value = int(str(raw_value or default))
+    except (TypeError, ValueError):
+        value = default
+    return max(0, value)
 
 
 def _known_recalculation_range(conn, settings: dict[str, str]) -> tuple[str, str]:

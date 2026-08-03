@@ -4,7 +4,7 @@ Private, lokale Arbeitszeiterfassung mit drei Bereichen:
 
 - `main.pyw` / `main.py`: Root-Starter. Standardmäßig startet der Tracker; mit `--app` startet nur die App.
 - `tracker/`: Hintergrundprogramm mit Tray-/Menüleisten-Icon, automatischem Arbeitsbeginn beim Start, manuellem Pausen-/Abwesenheitsmenü, Windows-Shutdown-Erkennung und Benachrichtigungen.
-- `app/`: lokale pywebview-Desktop-App für Dashboard, Kalender, Einträge, Statistiken, Urlaub/Abwesenheiten, Einstellungen, Backup und Export.
+- `app/`: lokale pywebview-Desktop-App für Dashboard, Kalender, Einträge, Statistiken, Urlaub/Abwesenheiten, Arbeitszeit-Rechner, Einstellungen, Backup und Export.
 - `common/`: gemeinsame SQLite-Datenbank, Berechnungs-Engine, Standortcheck, HTML-Diagnose-Log und Export.
 
 Die Nutzung braucht keinen Server, keinen offenen Port, keine Cloud und kein Konto. Alle Daten liegen lokal in `data/database.db`. In der Windows-Exe liegt der Datenordner neben der Exe.
@@ -119,6 +119,7 @@ Hinweis Windows: pywebview nutzt üblicherweise Microsoft Edge WebView2. Auf akt
 - Der Export-Standardzeitraum geht vom ersten echten lokalen Eintrag bis zum neuesten lokalen Eintrag, zur neuesten Abwesenheit oder Notiz. Abwesenheiten werden auch außerhalb eines enger gewählten Exportzeitraums mit exportiert; leere zukünftige Arbeitstage bleiben aus der Datei heraus.
 - SAP-SDATA-Dateien können unter `Backup & Export` zuerst als Vorschau geprüft werden. `P10` wird als Arbeitsbeginn, `P20` als Arbeitsende gelesen; Lücken zwischen zwei Arbeitssegmenten werden als Pause vorgeschlagen. Importiert werden nur die ausgewählten Tage, danach wird wie beim normalen Import ein HTML-Protokoll geschrieben.
 - In `Einträge` kannst du die Liste zusätzlich filtern: Tagesart, Standort, Saldo, laufende/abgeschlossene Tage, Notizen sowie Arbeitszeit größer/kleiner als eine Stundenangabe.
+- Der `Arbeitszeit Rechner` ist ein lokales Planungswerkzeug. Er übernimmt Sollzeit, Arbeitstage, Mindestpause und aktuellen Gleitzeitsaldo aus den Einstellungen, speichert aber keine Zeiten in der Datenbank.
 
 ## Bedienung
 
@@ -129,6 +130,7 @@ Tracker-Menü:
 - Abwesenheit starten/beenden
 - Feierabend
 - Urlaub und Abwesenheiten/App öffnen/Einstellungen
+- Arbeitszeit Rechner über die App-Navigation
 - Backup jetzt erstellen
 - Diagnose-Log öffnen
 - Beenden
@@ -199,7 +201,7 @@ Automatische Tests:
 python3 -m pytest
 ```
 
-Getestet werden Datenbank-/Berechnungslogik, Pausenzeit/Arbeitstage, Startdatum/Anfangssaldo, Officequote, SAP-SDATA-Import, Gleitzeit-Farbstatus, Standortcheck, macOS-sichere Notification-Queue, Launcher und HTML-Log-Erzeugung.
+Getestet werden Datenbank-/Berechnungslogik, Pausenzeit/Arbeitstage, Startdatum/Anfangssaldo, Officequote, Arbeitszeit-Rechner, SAP-SDATA-Import, Gleitzeit-Farbstatus, Standortcheck, macOS-sichere Notification-Queue, Launcher und HTML-Log-Erzeugung.
 
 ## Manuelle Testanleitung
 
@@ -212,19 +214,20 @@ Getestet werden Datenbank-/Berechnungslogik, Pausenzeit/Arbeitstage, Startdatum/
 5. `Pause beenden` klicken, prüfen, dass automatisch ein neues Arbeitssegment startet.
 6. `Abwesenheit starten/beenden` analog testen.
 7. `Feierabend` klicken und prüfen, dass das offene Segment geschlossen wird.
-8. `python3 main.py --app` starten und Dashboard, Kalender, Einträge, Statistiken, Urlaub und Abwesenheiten sowie Einstellungen öffnen.
+8. `python3 main.py --app` starten und Dashboard, Kalender, Einträge, Statistiken, Urlaub und Abwesenheiten, Arbeitszeit Rechner sowie Einstellungen öffnen.
 9. In den Einstellungen die Kacheln `Arbeitsmodell`, `Startwerte`, `Standort & Puffer`, `Backup & Export` und `Zurücksetzen` öffnen und schließen.
 10. `Pausenzeit`, `Arbeitstage`, `Startdatum der Zeiterfassung`, `Anfangssaldo Gleitzeit in Stunden`, manuelle Büro-/Homeoffice-Tage und Startpuffer je Standort testen.
 11. Dashboard und Statistiken prüfen: Gleitzeitstand soll als Badge grün/orange/rot erscheinen, Dashboard-Kacheln sollen Details aufklappen.
 12. Dashboard `Officequote` prüfen: Büroanteil soll mit Zeitraum, Mindestquote, Büro, Homeoffice, getrackten und manuellen Tagen aufklappen.
 13. Im Kalender prüfen, dass links die Kalenderwochen stehen; dann einen Tag öffnen, Segmentzeiten ändern, Standort korrigieren und Notiz speichern.
 14. In `Einträge` suchen und Filter für Tagesart, Standort, Saldo, Status, Notizen sowie Arbeitszeit testen; danach eine Zeile über `Details` öffnen, Segment ändern/löschen und prüfen, dass die Liste aktualisiert wird.
-15. Backup über App oder Tray auslösen und Datei in `data/backups/` prüfen.
-16. Diagnose-Log öffnen und Suche/Sortierung im Browser testen.
-17. In `Urlaub und Abwesenheiten` Urlaub, Gleitzeit, Krankheit, Dienstreise oder Feiertags-Ausnahme mit Notiz eintragen und prüfen, dass darunter Zeitraum, Notiz, angerechnete Arbeitstage und Entfernen-Aktion erscheinen.
-18. Export in CSV, Excel und PDF ausführen; CSV oder Excel anschließend über `Daten importieren` testweise in eine Testdatenbank einlesen.
-19. SAP-SDATA-Datei über `SAP-SDATA prüfen` laden, Unterschiede in der Vorschau prüfen, einzelne Tage abwählen und ausgewählte Tage importieren.
-20. Aus dem Tracker-Menü mehrmals `App öffnen`, `Urlaub und Abwesenheiten` und `Einstellungen` wählen. Es darf immer nur ein App-Fenster laufen.
+15. Im `Arbeitszeit Rechner` die aktuelle Woche füllen, eine Zeile auf `Enduhrzeit berechnen` stellen und prüfen, dass Start, Pause, Soll, Ziel-Gleitzeit und Endzeit sofort neu berechnet werden.
+16. Backup über App oder Tray auslösen und Datei in `data/backups/` prüfen.
+17. Diagnose-Log öffnen und Suche/Sortierung im Browser testen.
+18. In `Urlaub und Abwesenheiten` Urlaub, Gleitzeit, Krankheit, Dienstreise oder Feiertags-Ausnahme mit Notiz eintragen und prüfen, dass darunter Zeitraum, Notiz, angerechnete Arbeitstage und Entfernen-Aktion erscheinen.
+19. Export in CSV, Excel und PDF ausführen; CSV oder Excel anschließend über `Daten importieren` testweise in eine Testdatenbank einlesen.
+20. SAP-SDATA-Datei über `SAP-SDATA prüfen` laden, Unterschiede in der Vorschau prüfen, einzelne Tage abwählen und ausgewählte Tage importieren.
+21. Aus dem Tracker-Menü mehrmals `App öffnen`, `Urlaub und Abwesenheiten` und `Einstellungen` wählen. Es darf immer nur ein App-Fenster laufen.
 
 ### Windows Produktivtest
 

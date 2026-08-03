@@ -19,6 +19,10 @@ const state = {
   },
   statsChart: null,
   dashboardData: null,
+  calculatorDefaults: null,
+  calculatorRows: [],
+  calculatorStartBalanceHours: "",
+  calculatorLimitHours: "50",
   autoRefreshIntervalSeconds: 60,
   sapSdataPreview: null,
 };
@@ -40,12 +44,12 @@ document.getElementById("refresh-view")?.addEventListener("click", () => refresh
 
 window.addEventListener("pywebviewready", async () => {
   syncNav();
-  const settings = await loadInitialTheme();
+  startCommandPolling();
   try {
     await render();
-    startCommandPolling();
+    const settings = state.dashboardData?.settings || await loadInitialTheme();
     startAutoRefresh(settings);
-    await checkInitialSetup(settings);
+    checkInitialSetup(settings);
   } catch (error) {
     showError(error);
   }
@@ -111,6 +115,7 @@ async function render() {
     if (state.view === "entries") return renderEntries();
     if (state.view === "statistics") return renderStatistics();
     if (state.view === "vacation") return renderVacation();
+    if (state.view === "calculator") return renderCalculator();
     if (state.view === "settings") return renderSettings();
   } catch (error) {
     showError(error);
@@ -124,6 +129,7 @@ async function renderDashboard() {
 
 function renderDashboardFrame(data) {
   state.dashboardData = data;
+  document.body.classList.toggle("dark", data.settings?.darkmode === "1");
   const metrics = dashboardMetrics(data);
   const activeMetric = metrics.find(metric => metric.key === state.dashboardDetailKey) || null;
   content.innerHTML = `
@@ -1356,6 +1362,464 @@ async function refreshVacation({ silent = true } = {}) {
   await loadAbsences();
 }
 
+async function renderCalculator() {
+  if (!state.calculatorDefaults) {
+    state.calculatorDefaults = await api("calculator_defaults");
+    initializeCalculatorRows();
+  } else if (!state.calculatorRows.length) {
+    initializeCalculatorRows();
+  }
+  renderCalculatorFrame();
+}
+
+function initializeCalculatorRows() {
+  const defaults = state.calculatorDefaults || {};
+  if (!state.calculatorStartBalanceHours) {
+    state.calculatorStartBalanceHours = minutesToDecimalInput(defaults.flextime_minutes || 0);
+  }
+  state.calculatorRows = [createCalculatorRow(defaults.today || isoToday())];
+}
+
+function fillCalculatorWeekRows() {
+  const defaults = state.calculatorDefaults || {};
+  const workdays = calculatorWorkdays();
+  const today = parseIsoDate(defaults.today) || new Date();
+  const monday = addDays(today, -weekdayIndexFromDate(today));
+  const rows = workdays.map(day => createCalculatorRow(isoFromDate(addDays(monday, day))));
+  state.calculatorRows = rows.length ? rows : [createCalculatorRow(defaults.today || isoToday())];
+}
+
+function renderCalculatorFrame() {
+  content.innerHTML = `
+    <div class="page-head">
+      <div>
+        <h1>Arbeitszeit Rechner</h1>
+        <p>Plane einzelne Tage oder eine Woche, ohne gespeicherte Arbeitszeiten zu ändern.</p>
+      </div>
+    </div>
+    <section class="calculator-shell">
+      <section class="panel calculator-summary-panel">
+        <div class="calculator-config-grid">
+          <label>Startsaldo Gleitzeit (h)
+            <input id="calculator-start-balance" type="text" inputmode="decimal" value="${escapeHtml(state.calculatorStartBalanceHours)}" placeholder="z. B. 48,5">
+          </label>
+          <label>Obergrenze (h)
+            <input id="calculator-limit-hours" type="text" inputmode="decimal" value="${escapeHtml(state.calculatorLimitHours)}" placeholder="z. B. 50">
+          </label>
+          <button id="calculator-reset" class="secondary" type="button">Aus Einstellungen neu laden</button>
+        </div>
+        <div class="calculator-summary-grid">
+          ${calculatorSummaryCard("plannedBalance", "Geplante Gleitzeit")}
+          ${calculatorSummaryCard("plannedAccount", "Geplanter Kontostand")}
+          ${calculatorSummaryCard("limitGap", "Puffer bis Grenze")}
+          ${calculatorSummaryCard("worktime", "Geplante Arbeitszeit")}
+        </div>
+      </section>
+      <section class="panel calculator-table-panel">
+        <div class="calculator-plan-head">
+          <div>
+            <h2>Planung</h2>
+            <p>Eine Zeile entspricht einem Arbeitstag. Komma und Punkt sind bei Stundenwerten erlaubt.</p>
+          </div>
+          <div class="calculator-action-row">
+            <button id="calculator-fill-week" class="secondary" type="button">Diese Woche füllen</button>
+            <button id="calculator-add-row" type="button">Tag hinzufügen</button>
+          </div>
+        </div>
+        <div class="calculator-row-list">
+          ${state.calculatorRows.map(calculatorRowHtml).join("")}
+        </div>
+      </section>
+    </section>
+  `;
+  bindCalculatorControls();
+  updateCalculatorOutputs();
+}
+
+function calculatorSummaryCard(key, label) {
+  return `
+    <div class="metric calculator-summary-card" data-calculator-summary="${escapeHtml(key)}">
+      <span>${escapeHtml(label)}</span>
+      <strong data-calculator-summary-value>--</strong>
+      <small data-calculator-summary-help></small>
+    </div>
+  `;
+}
+
+function calculatorRowHtml(row, index) {
+  const balanceMode = row.mode === "balance";
+  const endMode = row.mode === "end";
+  const targetBalanceMode = row.mode === "target_balance";
+  const endLikeMode = endMode || targetBalanceMode;
+  const canRemove = state.calculatorRows.length > 1;
+  return `
+    <article class="calculator-row-card" data-calculator-row="${escapeHtml(row.id)}">
+      <div class="calculator-row-title">
+        <strong>Tag ${index + 1}</strong>
+        <small>${escapeHtml(weekdayLong(row.date))}</small>
+      </div>
+      <label>Datum
+        <input class="calculator-control" data-field="date" type="date" value="${escapeHtml(row.date)}">
+      </label>
+      <label>Rechenart
+        <select class="calculator-control" data-field="mode">
+          <option value="balance" ${balanceMode ? "selected" : ""}>Gleitzeit berechnen</option>
+          <option value="end" ${endMode ? "selected" : ""}>Ende für ±0</option>
+          <option value="target_balance" ${targetBalanceMode ? "selected" : ""}>Ende aus Gleitzeit</option>
+        </select>
+      </label>
+      <label>Start
+        <input class="calculator-control" data-field="start" type="time" value="${escapeHtml(row.start)}">
+      </label>
+      ${balanceMode ? `
+        <label>Ende
+          <input class="calculator-control" data-field="end" type="time" value="${escapeHtml(row.end)}">
+        </label>
+      ` : endMode ? `
+        <label>Ziel-Gleitzeit (h)
+          <input type="text" value="0" readonly>
+        </label>
+      ` : `
+        <label>Ziel-Gleitzeit
+          <span class="calculator-unit-field">
+            <input class="calculator-control" data-field="desiredBalanceHours" type="text" inputmode="decimal" value="${escapeHtml(row.desiredBalanceHours)}" placeholder="${escapeHtml(balanceTargetPlaceholder(row.desiredBalanceUnit))}">
+            <select class="calculator-control calculator-unit-select" data-field="desiredBalanceUnit" aria-label="Einheit Ziel-Gleitzeit">
+              <option value="decimal" ${row.desiredBalanceUnit !== "clock" && row.desiredBalanceUnit !== "minutes" ? "selected" : ""}>Dezimal</option>
+              <option value="clock" ${row.desiredBalanceUnit === "clock" ? "selected" : ""}>Std:Min</option>
+              <option value="minutes" ${row.desiredBalanceUnit === "minutes" ? "selected" : ""}>Min</option>
+            </select>
+          </span>
+        </label>
+      `}
+      <label>Pause (h)
+        <input class="calculator-control" data-field="pauseHours" type="text" inputmode="decimal" value="${escapeHtml(row.pauseHours)}">
+      </label>
+      <label>Soll (h)
+        <input class="calculator-control" data-field="targetHours" type="text" inputmode="decimal" value="${escapeHtml(row.targetHours)}">
+      </label>
+      <div class="calculator-result" data-calculator-result="${escapeHtml(row.id)}">
+        <span data-calculator-main-label>${endLikeMode ? "Ende" : "Gleitzeit"}</span>
+        <strong data-calculator-main-value>--</strong>
+        <small data-calculator-detail-value>--</small>
+      </div>
+      <button class="secondary calculator-remove" type="button" data-row-id="${escapeHtml(row.id)}" ${canRemove ? "" : "disabled"} title="Zeile entfernen" aria-label="Zeile entfernen">×</button>
+    </article>
+  `;
+}
+
+function bindCalculatorControls() {
+  document.getElementById("calculator-start-balance")?.addEventListener("input", event => {
+    state.calculatorStartBalanceHours = event.currentTarget.value;
+    updateCalculatorOutputs();
+  });
+  document.getElementById("calculator-limit-hours")?.addEventListener("input", event => {
+    state.calculatorLimitHours = event.currentTarget.value;
+    updateCalculatorOutputs();
+  });
+  document.getElementById("calculator-fill-week")?.addEventListener("click", () => {
+    fillCalculatorWeekRows();
+    renderCalculatorFrame();
+  });
+  document.getElementById("calculator-reset")?.addEventListener("click", async () => {
+    state.calculatorDefaults = await api("calculator_defaults");
+    state.calculatorStartBalanceHours = minutesToDecimalInput(state.calculatorDefaults.flextime_minutes || 0);
+    initializeCalculatorRows();
+    renderCalculatorFrame();
+  });
+  document.getElementById("calculator-add-row")?.addEventListener("click", () => {
+    const previousRow = state.calculatorRows[state.calculatorRows.length - 1];
+    const previousDate = previousRow?.date || state.calculatorDefaults?.today || isoToday();
+    state.calculatorRows.push(createCalculatorRow(nextCalculatorWorkdayDate(previousDate)));
+    renderCalculatorFrame();
+  });
+  document.querySelectorAll(".calculator-row-card").forEach(card => {
+    const row = calculatorRowById(card.dataset.calculatorRow);
+    if (!row) return;
+    card.querySelectorAll(".calculator-control").forEach(control => {
+      const eventName = control.tagName === "SELECT" || control.type === "date" ? "change" : "input";
+      control.addEventListener(eventName, event => {
+        updateCalculatorRowValue(row, event.currentTarget.dataset.field, event.currentTarget.value);
+      });
+    });
+  });
+  document.querySelectorAll(".calculator-remove").forEach(button => {
+    button.addEventListener("click", () => {
+      if (state.calculatorRows.length <= 1) return;
+      state.calculatorRows = state.calculatorRows.filter(row => row.id !== button.dataset.rowId);
+      renderCalculatorFrame();
+    });
+  });
+}
+
+function updateCalculatorRowValue(row, field, value) {
+  if (!row || !field) return;
+  if (field === "desiredBalanceUnit") {
+    const currentMinutes = parseBalanceTargetMinutes(row.desiredBalanceHours, row.desiredBalanceUnit, 0);
+    row.desiredBalanceUnit = value;
+    row.desiredBalanceHours = formatBalanceTargetInput(currentMinutes, value);
+    renderCalculatorFrame();
+    return;
+  }
+  if (field === "date") {
+    const previousTarget = calculatorDefaultTargetMinutes(row.date);
+    const currentTarget = parseDecimalHoursToMinutes(row.targetHours, previousTarget);
+    row.date = value;
+    if (currentTarget === previousTarget) {
+      row.targetHours = minutesToDecimalInput(calculatorDefaultTargetMinutes(value));
+    }
+    renderCalculatorFrame();
+    return;
+  }
+  row[field] = value;
+  if (field === "mode") {
+    renderCalculatorFrame();
+    return;
+  }
+  updateCalculatorOutputs();
+}
+
+function updateCalculatorOutputs() {
+  let plannedBalance = 0;
+  let plannedWork = 0;
+  let validRows = 0;
+  state.calculatorRows.forEach(row => {
+    const result = calculatorRowResult(row);
+    const target = document.querySelector(`[data-calculator-result="${cssEscape(row.id)}"]`);
+    if (!target) return;
+    target.classList.toggle("positive", result.valid && result.balanceMinutes >= 0);
+    target.classList.toggle("negative", result.valid && result.balanceMinutes < 0);
+    const mainLabel = target.querySelector("[data-calculator-main-label]");
+    const mainValue = target.querySelector("[data-calculator-main-value]");
+    const detailValue = target.querySelector("[data-calculator-detail-value]");
+    const detailText = result.valid
+      ? `Erfasst ${fmtMinutes(result.capturedMinutes)} · Arbeit ${fmtMinutes(result.workMinutes)} · Pause ${fmtMinutes(result.pauseMinutes)}`
+      : result.error;
+    const endLikeMode = row.mode === "end" || row.mode === "target_balance";
+    if (mainLabel) mainLabel.textContent = endLikeMode ? "Ende" : "Gleitzeit";
+    if (mainValue) mainValue.textContent = result.valid ? (endLikeMode ? result.endLabel : signedMinutes(result.balanceMinutes)) : "--";
+    if (detailValue) detailValue.textContent = detailText;
+    target.title = detailText;
+    if (result.valid) {
+      plannedBalance += result.balanceMinutes;
+      plannedWork += result.workMinutes;
+      validRows += 1;
+    }
+  });
+
+  const startBalance = parseDecimalHoursToMinutes(state.calculatorStartBalanceHours, state.calculatorDefaults?.flextime_minutes || 0);
+  const limit = parseDecimalHoursToMinutes(state.calculatorLimitHours, 50 * 60);
+  const plannedAccount = startBalance + plannedBalance;
+  const limitGap = limit - plannedAccount;
+  setCalculatorSummary("plannedBalance", signedMinutes(plannedBalance), `${validRows} geplante Tage`);
+  setCalculatorSummary("plannedAccount", formatSignedDecimalHours(plannedAccount), `Startsaldo ${formatSignedDecimalHours(startBalance)}`);
+  setCalculatorSummary("limitGap", signedMinutes(limitGap), `Grenze ${formatDecimalHours(limit)} h`, limitGap);
+  setCalculatorSummary("worktime", fmtMinutes(plannedWork), "Summe der geplanten Arbeitszeit");
+}
+
+function setCalculatorSummary(key, value, help, signedValue = null) {
+  const card = document.querySelector(`[data-calculator-summary="${key}"]`);
+  if (!card) return;
+  card.classList.toggle("positive", signedValue !== null && signedValue >= 0);
+  card.classList.toggle("negative", signedValue !== null && signedValue < 0);
+  const valueElement = card.querySelector("[data-calculator-summary-value]");
+  const helpElement = card.querySelector("[data-calculator-summary-help]");
+  if (valueElement) valueElement.textContent = value;
+  if (helpElement) helpElement.textContent = help;
+}
+
+function calculatorRowResult(row) {
+  const start = parseClockMinutes(row.start);
+  if (start === null) return { valid: false, error: "Startzeit fehlt." };
+  const pauseMinutes = parseDecimalHoursToMinutes(row.pauseHours, 0);
+  const targetMinutes = parseDecimalHoursToMinutes(row.targetHours, 0);
+  if (row.mode === "end" || row.mode === "target_balance") {
+    const desiredBalance = row.mode === "target_balance" ? parseBalanceTargetMinutes(row.desiredBalanceHours, row.desiredBalanceUnit, 0) : 0;
+    const workMinutes = Math.max(0, targetMinutes + desiredBalance);
+    const capturedMinutes = workMinutes + pauseMinutes;
+    return {
+      valid: true,
+      capturedMinutes,
+      workMinutes,
+      pauseMinutes,
+      targetMinutes,
+      balanceMinutes: workMinutes - targetMinutes,
+      endLabel: formatClockWithDay(start + capturedMinutes),
+    };
+  }
+  const end = parseClockMinutes(row.end);
+  if (end === null) return { valid: false, error: "Endzeit fehlt." };
+  let capturedMinutes = end - start;
+  if (capturedMinutes < 0) capturedMinutes += 24 * 60;
+  const workMinutes = Math.max(0, capturedMinutes - pauseMinutes);
+  return {
+    valid: true,
+    capturedMinutes,
+    workMinutes,
+    pauseMinutes,
+    targetMinutes,
+    balanceMinutes: workMinutes - targetMinutes,
+    endLabel: formatClockWithDay(start + capturedMinutes),
+  };
+}
+
+function createCalculatorRow(date) {
+  const targetMinutes = calculatorDefaultTargetMinutes(date);
+  const pauseMinutes = Number(state.calculatorDefaults?.daily_break_minutes || 0);
+  const defaultStart = "08:00";
+  const defaultEnd = formatClockWithDay(parseClockMinutes(defaultStart) + targetMinutes + pauseMinutes).slice(0, 5);
+  return {
+    id: `calc-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    date,
+    mode: "balance",
+    start: defaultStart,
+    end: defaultEnd,
+    pauseHours: minutesToDecimalInput(pauseMinutes),
+    targetHours: minutesToDecimalInput(targetMinutes),
+    desiredBalanceHours: "0",
+    desiredBalanceUnit: "decimal",
+  };
+}
+
+function nextCalculatorWorkdayDate(previousDateText) {
+  const previousDate = parseIsoDate(previousDateText) || parseIsoDate(state.calculatorDefaults?.today) || new Date();
+  const workdays = new Set(calculatorWorkdays());
+  for (let offset = 1; offset <= 14; offset += 1) {
+    const candidate = addDays(previousDate, offset);
+    if (workdays.has(weekdayIndexFromDate(candidate))) return isoFromDate(candidate);
+  }
+  return isoFromDate(addDays(previousDate, 1));
+}
+
+function calculatorWorkdays() {
+  const raw = state.calculatorDefaults?.workday_weekdays;
+  const values = Array.isArray(raw) ? raw.map(Number).filter(value => Number.isInteger(value) && value >= 0 && value <= 6) : [];
+  return values.length ? values : [0, 1, 2, 3, 4];
+}
+
+function calculatorDefaultTargetMinutes(dateText) {
+  const weekday = weekdayIndexFromIso(dateText);
+  const targets = state.calculatorDefaults?.target_minutes_by_weekday || {};
+  const value = Number(targets[String(weekday)]);
+  if (Number.isFinite(value)) return Math.max(0, Math.round(value));
+  const weeklyHours = Number.parseFloat(String(state.calculatorDefaults?.weekly_target_hours || "40").replace(",", "."));
+  const workdayCount = Math.max(1, calculatorWorkdays().length);
+  return Math.round(((Number.isFinite(weeklyHours) ? weeklyHours : 40) * 60) / workdayCount);
+}
+
+function calculatorRowById(id) {
+  return state.calculatorRows.find(row => row.id === id);
+}
+
+function parseDecimalHoursToMinutes(value, fallback = 0) {
+  const raw = String(value ?? "").trim();
+  if (!raw) return fallback;
+  const parsed = Number(raw.replace(",", "."));
+  return Number.isFinite(parsed) ? Math.round(parsed * 60) : fallback;
+}
+
+function parseBalanceTargetMinutes(value, unit = "decimal", fallback = 0) {
+  const raw = String(value ?? "").trim();
+  if (!raw) return fallback;
+  if (unit === "minutes") {
+    const parsed = Number(raw.replace(",", "."));
+    return Number.isFinite(parsed) ? Math.round(parsed) : fallback;
+  }
+  if (unit === "clock") {
+    const match = raw.match(/^([+-])?\s*(\d{1,3})(?::|h|\s)(\d{1,2})$/i);
+    if (!match) return fallback;
+    const sign = match[1] === "-" ? -1 : 1;
+    const hours = Number(match[2]);
+    const minutes = Number(match[3]);
+    if (!Number.isFinite(hours) || !Number.isFinite(minutes) || minutes > 59) return fallback;
+    return sign * ((hours * 60) + minutes);
+  }
+  return parseDecimalHoursToMinutes(raw, fallback);
+}
+
+function formatBalanceTargetInput(minutes, unit = "decimal") {
+  const value = Math.round(Number(minutes) || 0);
+  if (unit === "minutes") return String(value);
+  if (unit === "clock") {
+    const sign = value < 0 ? "-" : "";
+    const absolute = Math.abs(value);
+    return `${sign}${Math.floor(absolute / 60)}:${String(absolute % 60).padStart(2, "0")}`;
+  }
+  return minutesToDecimalInput(value);
+}
+
+function balanceTargetPlaceholder(unit = "decimal") {
+  if (unit === "minutes") return "z. B. 15";
+  if (unit === "clock") return "z. B. 0:15";
+  return "z. B. 0,25";
+}
+
+function minutesToDecimalInput(minutes) {
+  const value = (Number(minutes) || 0) / 60;
+  return value.toFixed(2).replace(".", ",").replace(/,?0+$/, "");
+}
+
+function formatSignedDecimalHours(minutes) {
+  const value = Number(minutes) || 0;
+  return `${value >= 0 ? "+" : "-"}${formatDecimalHours(Math.abs(value))} h`;
+}
+
+function formatDecimalHours(minutes) {
+  const value = (Number(minutes) || 0) / 60;
+  return new Intl.NumberFormat("de-DE", { maximumFractionDigits: 2 }).format(value);
+}
+
+function parseClockMinutes(value) {
+  const match = String(value || "").match(/^(\d{1,2}):(\d{2})$/);
+  if (!match) return null;
+  const hours = Number(match[1]);
+  const minutes = Number(match[2]);
+  if (hours > 23 || minutes > 59) return null;
+  return hours * 60 + minutes;
+}
+
+function formatClockWithDay(totalMinutes) {
+  const rounded = Math.max(0, Math.round(Number(totalMinutes) || 0));
+  const dayOffset = Math.floor(rounded / (24 * 60));
+  const minutesOfDay = rounded % (24 * 60);
+  const label = `${String(Math.floor(minutesOfDay / 60)).padStart(2, "0")}:${String(minutesOfDay % 60).padStart(2, "0")}`;
+  if (!dayOffset) return label;
+  return `${label} +${dayOffset} Tag${dayOffset > 1 ? "e" : ""}`;
+}
+
+function weekdayIndexFromIso(dateText) {
+  const date = parseIsoDate(dateText);
+  return date ? weekdayIndexFromDate(date) : 0;
+}
+
+function weekdayIndexFromDate(date) {
+  return (date.getDay() + 6) % 7;
+}
+
+function parseIsoDate(value) {
+  const match = String(value || "").match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return null;
+  return new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
+}
+
+function addDays(date, days) {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate() + days);
+}
+
+function isoFromDate(date) {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
+
+function weekdayLong(dateText) {
+  const date = parseIsoDate(dateText);
+  if (!date) return "Datum offen";
+  return new Intl.DateTimeFormat("de-DE", { weekday: "long" }).format(date);
+}
+
+function cssEscape(value) {
+  if (window.CSS?.escape) return CSS.escape(String(value));
+  return String(value).replace(/["\\]/g, "\\$&");
+}
+
 async function renderSettings() {
   const settings = await api("settings");
   const sections = settingsSections(settings);
@@ -2070,6 +2534,7 @@ function bindSettingsForm(section) {
     try {
       const result = await api("save_settings", values);
       document.body.classList.toggle("dark", result.settings.darkmode === "1");
+      resetCalculatorDefaults();
       startAutoRefresh(result.settings);
       notify(section?.setup ? "Einrichtung gespeichert" : "Einstellungen gespeichert");
       await renderSettings();
@@ -2105,6 +2570,12 @@ function collectSettingsValues(form) {
     delete values.workday_weekday;
   }
   return values;
+}
+
+function resetCalculatorDefaults() {
+  state.calculatorDefaults = null;
+  state.calculatorRows = [];
+  state.calculatorStartBalanceHours = "";
 }
 
 function openResetDialog() {
@@ -2297,7 +2768,7 @@ async function api(name, ...args) {
 function startCommandPolling() {
   if (commandPollTimer) return;
   checkAppCommand();
-  commandPollTimer = setInterval(checkAppCommand, 800);
+  commandPollTimer = setInterval(checkAppCommand, 250);
 }
 
 function startAutoRefresh(settings = null) {
@@ -2475,7 +2946,7 @@ function isoToday() {
 }
 
 function initialView() {
-  const allowed = new Set(["dashboard", "calendar", "entries", "statistics", "vacation", "settings"]);
+  const allowed = new Set(["dashboard", "calendar", "entries", "statistics", "vacation", "calculator", "settings"]);
   const view = window.location.hash.replace("#", "");
   return allowed.has(view) ? view : "dashboard";
 }

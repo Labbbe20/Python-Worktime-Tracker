@@ -16,6 +16,7 @@ Features
 * Flex time and overtime calculation
 * Vacation, sick leave, public holiday, and business trip management
 * Dashboard, calendar, list view, and statistics
+* Local worktime calculator for daily and weekly flex-time planning
 * Filterable entries list by day type, location, balance, status, notes, and worked hours
 * Detailed Excel, CSV, and PDF export with CSV/Excel re-import
 * SAP SDATA preview/import for P10/P20 time events
@@ -41,6 +42,7 @@ Funktionen
 * Berechnung von Gleitzeit und Überstunden
 * Verwaltung von Urlaub, Krankheit, Feiertagen und Dienstreisen
 * Dashboard, Kalender-, Listen- und Statistikansicht
+* Lokaler Arbeitszeit-Rechner für Tages- und Wochenplanung
 * Filterbare Einträge-Liste nach Tagesart, Standort, Saldo, Status, Notizen und Arbeitszeit
 * Detaillierter Export nach Excel, CSV und PDF mit CSV/Excel-Reimport
 * SAP-SDATA-Vorschau/Import für P10/P20-Zeitereignisse

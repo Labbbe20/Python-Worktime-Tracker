@@ -18,7 +18,7 @@ from typing import Any
 from common.config import DATA_DIR, ensure_data_dirs
 
 
-ALLOWED_VIEWS = {"dashboard", "calendar", "entries", "statistics", "vacation", "settings"}
+ALLOWED_VIEWS = {"dashboard", "calendar", "entries", "statistics", "vacation", "calculator", "settings"}
 PID_FILE = DATA_DIR / "app.pid"
 COMMAND_FILE = DATA_DIR / "app_command.json"
 
