@@ -391,11 +391,22 @@ def get_location_statistics(conn, through_date: str | None = None) -> dict[str, 
     tracked_office = sum(1 for row in summaries if row["location"] == "OFFICE")
     tracked_home = sum(1 for row in summaries if row["location"] == "HOME")
     tracked_mixed = sum(1 for row in summaries if row["location"] == "MIXED")
+    mixed_day_mode = settings.get("office_quota_mixed_day_mode", "split")
+    if mixed_day_mode == "office":
+        mixed_office_weight = 1.0
+        mixed_home_weight = 0.0
+    elif mixed_day_mode == "homeoffice":
+        mixed_office_weight = 0.0
+        mixed_home_weight = 1.0
+    else:
+        mixed_day_mode = "split"
+        mixed_office_weight = 0.5
+        mixed_home_weight = 0.5
     include_baseline = period_mode == "all"
     manual_office = max(0.0, _safe_float(settings.get("office_baseline_days"), 0.0)) if include_baseline else 0.0
     manual_home = max(0.0, _safe_float(settings.get("homeoffice_baseline_days"), 0.0)) if include_baseline else 0.0
-    weighted_office = manual_office + tracked_office + (tracked_mixed * 0.5)
-    weighted_home = manual_home + tracked_home + (tracked_mixed * 0.5)
+    weighted_office = manual_office + tracked_office + (tracked_mixed * mixed_office_weight)
+    weighted_home = manual_home + tracked_home + (tracked_mixed * mixed_home_weight)
     total_days = weighted_office + weighted_home
     office_percent = (weighted_office / total_days * 100) if total_days else 0.0
     home_percent = (weighted_home / total_days * 100) if total_days else 0.0
@@ -406,6 +417,7 @@ def get_location_statistics(conn, through_date: str | None = None) -> dict[str, 
         "configured_end_date": configured_end_date.isoformat(),
         "period_mode": period_mode,
         "target_percent": target_percent,
+        "mixed_day_mode": mixed_day_mode,
         "tracked_office_days": tracked_office,
         "tracked_homeoffice_days": tracked_home,
         "tracked_mixed_days": tracked_mixed,

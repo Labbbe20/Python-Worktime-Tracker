@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import sys
+import threading
 from pathlib import Path
 
 
@@ -18,6 +19,7 @@ from app.instance import (
     normalize_view,
     register_current_process,
     request_app_view,
+    read_command,
 )
 from common import database
 from common.config import PROJECT_ROOT
@@ -26,6 +28,40 @@ from common.html_logger import HtmlLogHandler
 
 APP_ICON_ICO = PROJECT_ROOT / "app" / "static" / "icons" / "app.ico"
 APP_ICON_PNG = PROJECT_ROOT / "app" / "static" / "icons" / "app.png"
+
+
+class AppCommandWatcher:
+    """Focus the preloaded app from Python even when hidden WebView timers pause."""
+
+    def __init__(self, api: WorktimeApi, interval_seconds: float = 0.12) -> None:
+        self.api = api
+        self.interval_seconds = interval_seconds
+        self._last_command_id: str | None = None
+        self._stop_event = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def start(self) -> None:
+        if self._thread and self._thread.is_alive():
+            return
+        self._thread = threading.Thread(target=self._run, name="worktime-app-command-watcher", daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop_event.set()
+        if self._thread and self._thread.is_alive():
+            self._thread.join(timeout=0.5)
+
+    def _run(self) -> None:
+        logger = logging.getLogger("worktime.app")
+        while not self._stop_event.wait(self.interval_seconds):
+            try:
+                command = read_command(self._last_command_id)
+                if not command:
+                    continue
+                self._last_command_id = command["id"]
+                self.api.focus_window(command["view"])
+            except Exception:
+                logger.debug("App-Kommando konnte nicht direkt verarbeitet werden", exc_info=True)
 
 
 def configure_logging() -> None:
@@ -67,10 +103,13 @@ def main() -> None:
         background_color="#f8fafc",
     )
     api.attach_window(window)
+    command_watcher = AppCommandWatcher(api)
+    command_watcher.start()
     logging.getLogger("worktime.app").info("App-Fenster gestartet: %s", window.title)
     try:
         webview.start(debug=False, icon=_app_icon_path())
     finally:
+        command_watcher.stop()
         clear_current_process()
 
 

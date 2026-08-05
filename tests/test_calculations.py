@@ -347,6 +347,33 @@ def test_location_statistics_include_manual_baseline_and_mixed_days(tmp_path):
     assert stats["office_requirement_met"] is True
 
 
+def test_location_statistics_can_count_mixed_days_as_one_side(tmp_path):
+    conn = make_conn(tmp_path)
+    database.set_settings(
+        conn,
+        {
+            "tracking_start_date": "2026-07-01",
+            "office_quota_mixed_day_mode": "office",
+        },
+    )
+    database.add_segment(conn, "2026-07-01", "WORK", "08:00:00", "12:00:00", "OFFICE")
+    database.add_segment(conn, "2026-07-01", "WORK", "13:00:00", "16:00:00", "HOME")
+    calculations.recalculate_day(conn, "2026-07-01")
+
+    office_stats = calculations.get_location_statistics(conn, "2026-07-01")
+    assert office_stats["mixed_day_mode"] == "office"
+    assert office_stats["office_days"] == 1
+    assert office_stats["homeoffice_days"] == 0
+    assert office_stats["office_percent"] == 100.0
+
+    database.set_setting(conn, "office_quota_mixed_day_mode", "homeoffice")
+    home_stats = calculations.get_location_statistics(conn, "2026-07-01")
+    assert home_stats["mixed_day_mode"] == "homeoffice"
+    assert home_stats["office_days"] == 0
+    assert home_stats["homeoffice_days"] == 1
+    assert home_stats["office_percent"] == 0.0
+
+
 def test_location_statistics_marks_under_50_percent_office(tmp_path):
     conn = make_conn(tmp_path)
     database.set_settings(

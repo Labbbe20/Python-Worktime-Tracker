@@ -3,9 +3,44 @@ from __future__ import annotations
 from datetime import date as Date
 from datetime import datetime
 from datetime import timedelta
+from pathlib import Path
 
 from app.api import WorktimeApi, _live_day_info
 from common import database
+
+
+APP_JS = Path(__file__).resolve().parents[1] / "app" / "static" / "js" / "app.js"
+
+
+def test_settings_categories_are_split_and_sap_help_explains_source_tables():
+    script = APP_JS.read_text(encoding="utf-8")
+
+    for label in (
+        "Urlaub & Feiertage",
+        "Gleitzeit-Startwerte",
+        "Tracking-Automatik",
+        "App & Aktualisierung",
+        "Standortcheck",
+        "Officequote",
+        "Zeitpuffer",
+        "Backup, Import & Export",
+    ):
+        assert label in script
+    assert "Standort & Puffer" not in script
+    assert "EDIDC" in script
+    assert "EDID4" in script
+    assert "HRCC1UPTEVEN" in script
+    assert "*02634" not in script
+
+
+def test_settings_subnavigation_preserves_scroll_position_between_categories():
+    script = APP_JS.read_text(encoding="utf-8")
+
+    assert "settingsSubnavScrollTop" in script
+    assert "rememberSettingsSubnavScroll()" in script
+    assert "restoreSettingsSubnavScroll()" in script
+    assert "subnav.scrollTop = state.settingsSubnavScrollTop || 0" in script
+    assert "state.settingsSubnavScrollTop = 0" in script
 
 
 def test_api_saves_popup_settings(tmp_path):
@@ -83,12 +118,14 @@ def test_api_saves_office_quota_and_preload_settings(tmp_path):
         {
             "office_quota_target_percent": "60,5",
             "office_quota_period_mode": "rolling_365",
+            "office_quota_mixed_day_mode": "homeoffice",
             "preload_app_on_tracker_start": "0",
         }
     )
 
     assert result["settings"]["office_quota_target_percent"] == "60.5"
     assert result["settings"]["office_quota_period_mode"] == "rolling_365"
+    assert result["settings"]["office_quota_mixed_day_mode"] == "homeoffice"
     assert result["settings"]["preload_app_on_tracker_start"] == "0"
 
 

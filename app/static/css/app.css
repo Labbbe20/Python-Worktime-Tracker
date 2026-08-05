@@ -880,9 +880,61 @@ legend {
 }
 
 .settings-form > label,
-.settings-form > fieldset {
+.settings-form > fieldset,
+.settings-form > .settings-field {
   min-width: 0;
   align-self: stretch;
+}
+
+.settings-field {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  align-content: start;
+  color: var(--muted);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.settings-field-head,
+.help-inline,
+.import-panel-actions {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+.settings-field-head,
+.help-inline {
+  justify-content: space-between;
+}
+
+.settings-field-head strong {
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.help-inline .help-text {
+  min-width: 0;
+}
+
+button.help-icon-button {
+  flex: 0 0 auto;
+  width: 36px;
+  min-width: 36px;
+  min-height: 36px;
+  padding: 0;
+  border-color: var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--muted);
+  font-weight: 900;
+}
+
+button.help-icon-button:hover {
+  border-color: color-mix(in srgb, var(--primary), var(--border) 30%);
+  background: color-mix(in srgb, var(--surface), var(--primary) 9%);
+  color: var(--text);
 }
 
 .conditional-field {
@@ -1088,6 +1140,22 @@ legend {
   background: var(--surface);
   box-shadow: 0 24px 60px rgba(15, 23, 42, 0.28);
   animation: dashboard-detail-in 220ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.help-dialog {
+  width: min(680px, 100%);
+}
+
+.help-dialog-body {
+  display: grid;
+  gap: 10px;
+  color: var(--muted);
+  font-weight: 650;
+  line-height: 1.6;
+}
+
+.help-dialog-body p {
+  margin: 0;
 }
 
 .calendar-grid {
@@ -1707,8 +1775,14 @@ button.calculator-remove:disabled {
   font-weight: 600;
 }
 
-.import-panel .compact-button {
-  justify-self: end;
+.import-panel-actions {
+  flex: 0 0 auto;
+  justify-content: flex-end;
+}
+
+.import-action-button {
+  min-width: 176px;
+  white-space: nowrap;
 }
 
 .error-panel {
@@ -2281,6 +2355,15 @@ button.calculator-remove:disabled {
   .error-panel {
     display: grid;
     align-items: stretch;
+  }
+
+  .help-inline,
+  .import-panel-actions {
+    justify-content: stretch;
+  }
+
+  .import-panel-actions button:not(.help-icon-button) {
+    width: 100%;
   }
 
   .dashboard-detail-grid {

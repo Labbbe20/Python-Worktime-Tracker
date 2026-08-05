@@ -43,6 +43,7 @@ DEFAULT_SETTINGS: dict[str, str] = {
     "office_quota_period_mode": "all",
     "office_quota_custom_start": "",
     "office_quota_custom_end": "",
+    "office_quota_mixed_day_mode": "split",
     "homeoffice_check_targets": "",
     "homeoffice_check_timeout_ms": "1500",
     "office_start_buffer_minutes": "0",

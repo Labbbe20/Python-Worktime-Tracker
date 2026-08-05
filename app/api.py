@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import binascii
 import calendar
+import json
 import logging
 import tempfile
 import threading
@@ -277,8 +278,11 @@ class WorktimeApi:
                 str(day): calculations.get_target_minutes_for_date(monday + timedelta(days=day), settings)
                 for day in range(7)
             }
+            segments = database.get_segments_for_date(conn, today.isoformat())
+            first_work = next((row["start_time"] for row in segments if row["type"] == "WORK"), "")
             return {
                 "today": today.isoformat(),
+                "today_work_start_time": first_work[:5] if first_work else "",
                 "workday_weekdays": workdays,
                 "daily_break_minutes": _safe_nonnegative_int(settings.get("daily_break_minutes"), 0),
                 "weekly_target_hours": _setting_float_for_ui(settings.get("weekly_target_hours", "40")),
@@ -458,8 +462,13 @@ class WorktimeApi:
         if not command:
             return None
         self._last_command_id = command["id"]
-        self._focus_window()
+        self.focus_window(command["view"])
         return {"view": command["view"]}
+
+    def focus_window(self, view: str | None = None) -> None:
+        self._focus_window()
+        if view:
+            self._set_frontend_view(view)
 
     def _focus_window(self) -> None:
         if self._window is None:
@@ -474,6 +483,16 @@ class WorktimeApi:
                 evaluate_js("window.focus();")
         except Exception:
             self.logger.debug("App-Fenster konnte nicht explizit fokussiert werden", exc_info=True)
+
+    def _set_frontend_view(self, view: str) -> None:
+        if self._window is None:
+            return
+        try:
+            evaluate_js = getattr(self._window, "evaluate_js", None)
+            if evaluate_js:
+                evaluate_js(f"if (window.__worktimeSetView) {{ window.__worktimeSetView({json.dumps(view)}); }}")
+        except Exception:
+            self.logger.debug("App-Ansicht konnte nicht per Direktkommando gesetzt werden", exc_info=True)
 
     def _locked_conn(self):
         class LockedConnection:
@@ -686,6 +705,7 @@ def _normalize_settings_input(values: dict[str, Any]) -> dict[str, str]:
         ("daily_info_popup_mode", {"off", "work_end", "custom"}),
         ("dashboard_absence_countdown_mode", {"workdays", "calendar_days"}),
         ("office_quota_period_mode", {"all", "current_year", "rolling_365", "custom"}),
+        ("office_quota_mixed_day_mode", {"split", "office", "homeoffice"}),
     ):
         if key in normalized:
             normalized[key] = _normalize_choice_setting(normalized[key], allowed, key)

@@ -25,6 +25,7 @@ const state = {
   calculatorLimitHours: "50",
   autoRefreshIntervalSeconds: 60,
   sapSdataPreview: null,
+  settingsSubnavScrollTop: 0,
 };
 
 const content = document.getElementById("content");
@@ -35,6 +36,38 @@ let autoRefreshTimer = null;
 let autoRefreshInFlight = false;
 let refreshFocusHandlerAttached = false;
 let chartLibraryPromise = null;
+
+const SETTINGS_HELP = {
+  export: {
+    title: "Export",
+    paragraphs: [
+      "Der Export erstellt eine Datei mit deinen lokalen Arbeitszeiten, Abwesenheiten und Notizen. Excel ist am besten geeignet, wenn du die Daten später wieder importieren möchtest.",
+      "Der Zeitraum wird automatisch bis zum neuesten sinnvollen Eintrag erweitert, damit auch geplante Urlaube oder Abwesenheiten enthalten sind.",
+    ],
+  },
+  import_excel: {
+    title: "Excel-Import",
+    paragraphs: [
+      "Am einfachsten nimmst du eine vorher exportierte Excel-Datei als Vorlage. In der Übersicht reicht pro Tag Datum, Start, Ende und Standort; Details aus Segmente, Abwesenheiten und Notizen werden bevorzugt, wenn sie vorhanden sind.",
+      "Beim Import werden nur die Tage überschrieben, die in der Datei wirklich vorkommen. Danach wird ein HTML-Protokoll mit Vorher/Nachher und Warnungen geschrieben.",
+    ],
+  },
+  sap_sdata: {
+    title: "SAP-SDATA-Import",
+    paragraphs: [
+      "Die SAP-Zeitereignisse liegen typischerweise in den Tabellen EDIDC und EDID4. Suche zuerst in EDIDC nach deinem Datumsbereich und dem Nachrichtentyp HRCC1UPTEVEN. Kopiere danach die gefundenen DOCNUM-Werte.",
+      "Öffne danach EDID4, füge die DOCNUM-Werte ein und achte darauf, dass die Ergebnisanzahl hoch genug eingestellt ist. Filtere anschließend die Spalte SDATA auf deine eigene Personalnummer oder nutze ein dafür gespeichertes eigenes Layout.",
+      "Exportiere die Treffer als Excel- oder CSV-Datei. Wichtig ist nur, dass die Spalte SDATA enthalten ist. P10 wird als Arbeitsbeginn gelesen, P20 als Arbeitsende; SAP-SDATA gilt hier immer als Bürotag.",
+    ],
+  },
+  location_targets: {
+    title: "Standort-Ziele",
+    paragraphs: [
+      "Trage interne Ziele ein, die nur im Büro oder per Firmennetz erreichbar sind, zum Beispiel intranet.firma.local, server:443 oder https://intranet.firma.local.",
+      "Ist eines dieser Ziele erreichbar, wird der Tag als Büro erkannt. Ist keines erreichbar, wird Homeoffice verwendet. Wenn du unsicher bist, frage deine IT nach einem internen Servernamen.",
+    ],
+  },
+};
 
 document.querySelectorAll(".nav button[data-view]").forEach(button => {
   button.addEventListener("click", () => setView(button.dataset.view));
@@ -99,6 +132,8 @@ function setView(view) {
   syncNav();
   render();
 }
+
+window.__worktimeSetView = setView;
 
 function syncNav() {
   shell?.classList.toggle("utility-view", state.view === "settings");
@@ -221,6 +256,8 @@ function dashboardMetrics(data) {
         detailRow("Homeoffice gesamt", `${numberDe(data.location_stats.homeoffice_days)} Tage`),
         detailRow("Getrackt Büro", `${numberDe(data.location_stats.tracked_office_days)} Tage`),
         detailRow("Getrackt Homeoffice", `${numberDe(data.location_stats.tracked_homeoffice_days)} Tage`),
+        detailRow("Gemischte Tage", `${numberDe(data.location_stats.tracked_mixed_days)} Tage`),
+        detailRow("Gemischt zählt als", officeQuotaMixedModeLabel(data.location_stats.mixed_day_mode)),
         detailRow("Manuell Büro", `${numberDe(data.location_stats.manual_office_days)} Tage`),
         detailRow("Manuell Homeoffice", `${numberDe(data.location_stats.manual_homeoffice_days)} Tage`),
         detailText(data.location_stats.office_requirement_met ? "Die eingestellte Büroquote ist aktuell erfüllt." : "Achtung: Die eingestellte Büroquote ist aktuell unterschritten.", data.location_stats.office_requirement_met ? "positive" : "negative"),
@@ -1665,7 +1702,7 @@ function calculatorRowResult(row) {
 function createCalculatorRow(date) {
   const targetMinutes = calculatorDefaultTargetMinutes(date);
   const pauseMinutes = Number(state.calculatorDefaults?.daily_break_minutes || 0);
-  const defaultStart = "08:00";
+  const defaultStart = calculatorDefaultStartTime(date);
   const defaultEnd = formatClockWithDay(parseClockMinutes(defaultStart) + targetMinutes + pauseMinutes).slice(0, 5);
   return {
     id: `calc-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
@@ -1678,6 +1715,13 @@ function createCalculatorRow(date) {
     desiredBalanceHours: "0",
     desiredBalanceUnit: "decimal",
   };
+}
+
+function calculatorDefaultStartTime(dateText) {
+  const today = state.calculatorDefaults?.today || isoToday();
+  const trackedStart = state.calculatorDefaults?.today_work_start_time || "";
+  if (dateText === today && trackedStart) return trackedStart.slice(0, 5);
+  return "07:30";
 }
 
 function nextCalculatorWorkdayDate(previousDateText) {
@@ -1821,6 +1865,7 @@ function cssEscape(value) {
 }
 
 async function renderSettings() {
+  rememberSettingsSubnavScroll();
   const settings = await api("settings");
   const sections = settingsSections(settings);
   if (state.settingsDetailKey && !sections.some(section => section.key === state.settingsDetailKey)) {
@@ -1829,7 +1874,7 @@ async function renderSettings() {
   const active = state.settingsDetailKey ? sections.find(section => section.key === state.settingsDetailKey) : null;
   content.innerHTML = `
     <div class="page-head">
-      <div><h1>Einstellungen</h1><p>Arbeitsmodell, Automatisierung, Urlaub und Abwesenheiten, Standortcheck, Backup und Export.</p></div>
+      <div><h1>Einstellungen</h1><p>Arbeitsmodell, Gleitzeit, Automatik, Popups, Standort, Officequote und Dateiaustausch.</p></div>
       ${active ? `<button class="secondary" id="settings-overview" type="button">Übersicht</button>` : ""}
     </div>
     ${active ? `
@@ -1845,12 +1890,14 @@ async function renderSettings() {
   `;
   document.querySelectorAll(".settings-card").forEach(button => {
     button.addEventListener("click", () => {
+      state.settingsSubnavScrollTop = 0;
       state.settingsDetailKey = button.dataset.section;
       renderSettings();
     });
   });
   document.querySelectorAll(".settings-subnav button[data-section]").forEach(button => {
     button.addEventListener("click", () => {
+      rememberSettingsSubnavScroll();
       state.settingsDetailKey = button.dataset.section;
       renderSettings();
     });
@@ -1859,6 +1906,7 @@ async function renderSettings() {
     state.settingsDetailKey = "";
     renderSettings();
   });
+  restoreSettingsSubnavScroll();
   bindSettingsForm(active);
   document.getElementById("backup-now")?.addEventListener("click", async () => {
     const result = await api("create_backup");
@@ -1917,6 +1965,20 @@ async function renderSettings() {
   document.getElementById("open-reset-dialog")?.addEventListener("click", openResetDialog);
 }
 
+function rememberSettingsSubnavScroll() {
+  const subnav = document.querySelector(".settings-subnav");
+  if (subnav) state.settingsSubnavScrollTop = subnav.scrollTop;
+}
+
+function restoreSettingsSubnavScroll() {
+  const subnav = document.querySelector(".settings-subnav");
+  if (!subnav) return;
+  subnav.scrollTop = state.settingsSubnavScrollTop || 0;
+  subnav.addEventListener("scroll", () => {
+    state.settingsSubnavScrollTop = subnav.scrollTop;
+  }, { passive: true });
+}
+
 function settingsSections(settings) {
   const setupRequired = settings.initial_setup_required === "1";
   return [
@@ -1927,17 +1989,29 @@ function settingsSections(settings) {
       body: renderWorkSettings(settings),
     },
     {
+      key: "vacation_rules",
+      title: "Urlaub & Feiertage",
+      summary: "Jahresanspruch, Übertrag und Bundesland",
+      body: renderVacationSettings(settings),
+    },
+    {
       key: "start",
-      title: setupRequired ? "Startwerte einrichten" : "Startwerte",
-      summary: setupRequired ? "Einmalig nach dem Zurücksetzen ausfüllen" : "Gleitzeit, Urlaub und Nachträge",
-      body: renderSetupSettings(settings),
+      title: setupRequired ? "Gleitzeit einrichten" : "Gleitzeit-Startwerte",
+      summary: setupRequired ? "Trackingstart und Anfangssaldo setzen" : "Trackingstart und Anfangssaldo",
+      body: renderBalanceStartSettings(settings),
       setup: setupRequired,
     },
     {
       key: "automation",
-      title: "Automatisierung",
-      summary: "Autostart und automatische Trackingfunktionen",
-      body: renderAutomationSettings(settings),
+      title: "Tracking-Automatik",
+      summary: "Arbeitsbeginn, Arbeitsende und Fortsetzen",
+      body: renderTrackingAutomationSettings(settings),
+    },
+    {
+      key: "runtime",
+      title: "App & Aktualisierung",
+      summary: "Autostart, Vorladen und Live-Aktualisierung",
+      body: renderRuntimeSettings(settings),
     },
     {
       key: "popups",
@@ -1947,9 +2021,21 @@ function settingsSections(settings) {
     },
     {
       key: "location",
-      title: "Standort & Puffer",
-      summary: "Büro/Homeoffice-Erkennung, Start- und Endeversatz",
+      title: "Standortcheck",
+      summary: "Büro/Homeoffice-Erkennung",
       body: renderLocationSettings(settings),
+    },
+    {
+      key: "office_quota",
+      title: "Officequote",
+      summary: "Mindestquote, Zeitraum und gemischte Tage",
+      body: renderOfficeQuotaSettings(settings),
+    },
+    {
+      key: "buffers",
+      title: "Zeitpuffer",
+      summary: "Start- und Feierabendversatz je Standort",
+      body: renderBufferSettings(settings),
     },
     {
       key: "appearance",
@@ -1959,8 +2045,8 @@ function settingsSections(settings) {
     },
     {
       key: "files",
-      title: "Backup & Export",
-      summary: "Lokale Sicherungen und Ausgaben",
+      title: "Backup, Import & Export",
+      summary: "Lokale Sicherungen und Dateiaustausch",
       body: renderFileSettings(),
       plain: true,
     },
@@ -2034,14 +2120,22 @@ function renderWorkSettings(settings) {
       ${weekdayCheckboxes(settings.workday_weekdays)}
     </fieldset>
     <label>Individuelle Tages-Sollzeiten (JSON Minuten) <input name="weekday_target_minutes" type="text" value='${escapeHtml(settings.weekday_target_minutes)}'></label>
-    <label>Bundesland <input name="bundesland" type="text" value="${escapeHtml(settings.bundesland)}" placeholder="z. B. BW, BY, NRW"></label>
   `;
 }
 
-function renderSetupSettings(settings) {
+function renderVacationSettings(settings) {
   return `
     <label>Urlaubsanspruch/Jahr <input name="vacation_days_per_year" type="text" value="${escapeHtml(settings.vacation_days_per_year)}"></label>
     <label>Urlaubsübertrag Vorjahr <input name="vacation_carry_over" type="text" value="${escapeHtml(settings.vacation_carry_over)}"></label>
+    <label>Bundesland
+      <input name="bundesland" type="text" value="${escapeHtml(settings.bundesland)}" placeholder="z. B. BW, BY, NRW">
+      <small class="help-text">Wird für gesetzliche Feiertage in Kalender, Statistik und Arbeitszeitberechnung genutzt.</small>
+    </label>
+  `;
+}
+
+function renderBalanceStartSettings(settings) {
+  return `
     <label>Startdatum der Zeiterfassung
       <input name="tracking_start_date" type="date" value="${escapeHtml(settings.tracking_start_date || "")}">
       <small class="help-text">Tage vor dem Startdatum werden für den Gleitzeitsaldo ignoriert.</small>
@@ -2050,6 +2144,25 @@ function renderSetupSettings(settings) {
       <input name="initial_flextime_hours" type="text" inputmode="decimal" value="${escapeHtml(settings.initial_flextime_hours || "0,00")}" placeholder="50,89 oder -3.75">
       <small class="help-text">Komma und Punkt sind erlaubt, z. B. 50,89, -3,75 oder 12.5.</small>
     </label>
+  `;
+}
+
+function renderLocationSettings(settings) {
+  return `
+    <div class="settings-field field-wide">
+      <div class="settings-field-head">
+        <strong>Standort-Ziele</strong>
+        ${settingHelpButton("location_targets")}
+      </div>
+      <input name="homeoffice_check_targets" type="text" value="${escapeHtml(settings.homeoffice_check_targets)}" placeholder="server-firma, intranet.local:443, https://intranet.local">
+      <small class="help-text">Servername ohne Port wird per Ping geprüft. host:port oder https://... wird per TCP geprüft. Erreichbar bedeutet Büro, nicht erreichbar bedeutet Homeoffice.</small>
+    </div>
+    <label>Timeout Standortcheck (ms) <input name="homeoffice_check_timeout_ms" type="number" min="50" value="${escapeHtml(settings.homeoffice_check_timeout_ms)}"></label>
+  `;
+}
+
+function renderOfficeQuotaSettings(settings) {
+  return `
     <label>Manuelle Büro-Tage
       <input name="office_baseline_days" type="text" inputmode="decimal" value="${escapeHtml(settings.office_baseline_days || "0")}" placeholder="z. B. 42">
       <small class="help-text">Tage vor der Nutzung, die in die Officequote einfließen sollen.</small>
@@ -2058,19 +2171,17 @@ function renderSetupSettings(settings) {
       <input name="homeoffice_baseline_days" type="text" inputmode="decimal" value="${escapeHtml(settings.homeoffice_baseline_days || "0")}" placeholder="z. B. 38">
       <small class="help-text">Tage vor der Nutzung, die in die Homeofficequote einfließen sollen.</small>
     </label>
-  `;
-}
-
-function renderLocationSettings(settings) {
-  return `
-    <label>Standort-Ziele
-      <input name="homeoffice_check_targets" type="text" value="${escapeHtml(settings.homeoffice_check_targets)}" placeholder="server-firma, intranet.local:443, https://intranet.local">
-      <small class="help-text">Servername ohne Port wird per Ping geprüft. host:port oder https://... wird per TCP geprüft. Erreichbar bedeutet Büro, nicht erreichbar bedeutet Homeoffice.</small>
-    </label>
-    <label>Timeout Standortcheck (ms) <input name="homeoffice_check_timeout_ms" type="number" min="50" value="${escapeHtml(settings.homeoffice_check_timeout_ms)}"></label>
     <label>Mindestquote Büro (%)
       <input name="office_quota_target_percent" type="number" min="0" max="100" step="0.1" value="${escapeHtml(settings.office_quota_target_percent || "50")}">
       <small class="help-text">Schwelle, ab der die Dashboard-Kachel als erfüllt markiert wird.</small>
+    </label>
+    <label>Gemischte Tage zählen als
+      <select name="office_quota_mixed_day_mode">
+        <option value="split" ${settings.office_quota_mixed_day_mode !== "office" && settings.office_quota_mixed_day_mode !== "homeoffice" ? "selected" : ""}>Anteilig Büro und Homeoffice</option>
+        <option value="office" ${settings.office_quota_mixed_day_mode === "office" ? "selected" : ""}>Immer Bürotag</option>
+        <option value="homeoffice" ${settings.office_quota_mixed_day_mode === "homeoffice" ? "selected" : ""}>Immer Homeoffice-Tag</option>
+      </select>
+      <small class="help-text">Gilt für Tage, an denen Arbeitssegmente im Büro und im Homeoffice vorkommen.</small>
     </label>
     <label>Zeitraum für Officequote
       <select name="office_quota_period_mode">
@@ -2089,6 +2200,11 @@ function renderLocationSettings(settings) {
       Officequote bis
       <input name="office_quota_custom_end" type="date" value="${escapeHtml(settings.office_quota_custom_end || "")}">
     </label>
+  `;
+}
+
+function renderBufferSettings(settings) {
+  return `
     <label>Startpuffer Büro (Minuten)
       <input name="office_start_buffer_minutes" type="number" min="0" step="1" value="${escapeHtml(settings.office_start_buffer_minutes || "0")}">
       <small class="help-text">Wird nur beim automatischen Arbeitsbeginn abgezogen.</small>
@@ -2108,14 +2224,8 @@ function renderLocationSettings(settings) {
   `;
 }
 
-function renderAutomationSettings(settings) {
+function renderTrackingAutomationSettings(settings) {
   return `
-    ${settingToggle(
-      "autostart_enabled",
-      "Beim Hochfahren automatisch starten",
-      settings.autostart_enabled,
-      "Legt unter Windows eine Verknüpfung im Autostart-Ordner an oder entfernt sie."
-    )}
     ${settingToggle(
       "automatic_work_start_enabled",
       "Arbeitsbeginn automatisch erfassen",
@@ -2145,6 +2255,17 @@ function renderAutomationSettings(settings) {
       "Nach Abwesenheit automatisch weiterarbeiten",
       settings.auto_resume_after_absence_enabled,
       "Startet nach „Abwesenheit beenden“ automatisch wieder ein Arbeitssegment."
+    )}
+  `;
+}
+
+function renderRuntimeSettings(settings) {
+  return `
+    ${settingToggle(
+      "autostart_enabled",
+      "Beim Hochfahren automatisch starten",
+      settings.autostart_enabled,
+      "Legt unter Windows eine Verknüpfung im Autostart-Ordner an oder entfernt sie."
     )}
     ${settingToggle(
       "preload_app_on_tracker_start",
@@ -2260,14 +2381,20 @@ function renderFileSettings() {
           <select name="format"><option value="xlsx">Excel</option><option value="csv">CSV</option><option value="pdf">PDF</option></select>
         </label>
         <button>Export erstellen</button>
-        <small id="export-range-hint" class="help-text field-wide">Der Zeitraum wird automatisch bis zum neuesten Eintrag, zur neuesten Abwesenheit oder Notiz gesetzt.</small>
+        <div class="field-wide help-inline">
+          <small id="export-range-hint" class="help-text">Der Zeitraum wird automatisch bis zum neuesten Eintrag, zur neuesten Abwesenheit oder Notiz gesetzt.</small>
+          ${settingHelpButton("export")}
+        </div>
       </form>
       <div class="import-panel">
         <div>
           <strong>Daten importieren</strong>
           <small>CSV oder Excel aus einem Arbeitszeit-Export. Summenzeilen werden ignoriert, echte Segmente, Abwesenheiten und Notizen werden übernommen.</small>
         </div>
-        <button id="import-file" class="secondary" type="button">Daten importieren</button>
+        <div class="import-panel-actions">
+          ${settingHelpButton("import_excel")}
+          <button id="import-file" class="secondary" type="button">Daten importieren</button>
+        </div>
         <input id="import-file-input" type="file" accept=".csv,.xlsx,.xlsm,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" hidden>
       </div>
       <div id="import-result" aria-live="polite"></div>
@@ -2276,7 +2403,10 @@ function renderFileSettings() {
           <strong>SAP-SDATA prüfen</strong>
           <small>CSV oder Excel mit SDATA-Zeilen. P10 wird als Arbeitsbeginn, P20 als Arbeitsende gelesen; Lücken zwischen Arbeitssegmenten werden als Pause vorgeschlagen.</small>
         </div>
-        <button id="sap-sdata-file" class="secondary compact-button" type="button">SAP-Datei auswählen</button>
+        <div class="import-panel-actions">
+          ${settingHelpButton("sap_sdata")}
+          <button id="sap-sdata-file" class="secondary import-action-button" type="button">SAP-Datei auswählen</button>
+        </div>
         <input id="sap-sdata-file-input" type="file" accept=".csv,.xlsx,.xlsm,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" hidden>
       </div>
       <div id="sap-sdata-result" class="sap-import-preview" aria-live="polite"></div>
@@ -2521,6 +2651,7 @@ function renderResetSettings() {
 }
 
 function bindSettingsForm(section) {
+  bindSettingHelpButtons();
   document.getElementById("close-settings-detail")?.addEventListener("click", () => {
     state.settingsDetailKey = "";
     renderSettings();
@@ -2541,6 +2672,45 @@ function bindSettingsForm(section) {
     } catch (error) {
       notify(error.message || String(error), "error");
     }
+  });
+}
+
+function settingHelpButton(key) {
+  return `<button class="help-icon-button" type="button" data-settings-help="${escapeHtml(key)}" aria-label="Hilfe öffnen">?</button>`;
+}
+
+function bindSettingHelpButtons() {
+  document.querySelectorAll("[data-settings-help]").forEach(button => {
+    button.addEventListener("click", event => {
+      event.preventDefault();
+      event.stopPropagation();
+      openSettingsHelp(button.dataset.settingsHelp);
+    });
+  });
+}
+
+function openSettingsHelp(key) {
+  const help = SETTINGS_HELP[key];
+  if (!help) return;
+  document.querySelector(".modal-backdrop")?.remove();
+  const body = help.paragraphs.map(paragraph => `<p>${escapeHtml(paragraph)}</p>`).join("");
+  content.insertAdjacentHTML("beforeend", `
+    <div class="modal-backdrop" role="presentation">
+      <section class="modal-panel help-dialog" role="dialog" aria-modal="true" aria-labelledby="help-title">
+        <div class="page-head compact">
+          <div>
+            <h2 id="help-title">${escapeHtml(help.title)}</h2>
+          </div>
+          <button class="secondary" id="close-help-dialog" type="button">Schließen</button>
+        </div>
+        <div class="help-dialog-body">${body}</div>
+      </section>
+    </div>
+  `);
+  const close = () => document.querySelector(".modal-backdrop")?.remove();
+  document.getElementById("close-help-dialog")?.addEventListener("click", close);
+  document.querySelector(".modal-backdrop")?.addEventListener("click", event => {
+    if (event.target.classList.contains("modal-backdrop")) close();
   });
 }
 
@@ -2692,6 +2862,12 @@ function officeQuotaPeriodLabel(stats) {
   const end = stats.configured_end_date || stats.end_date || "";
   const countedEnd = stats.end_date && stats.end_date !== end ? `, gezählt bis ${stats.end_date}` : "";
   return `${start || "Start"} bis ${end || "heute"}${countedEnd}`;
+}
+
+function officeQuotaMixedModeLabel(mode) {
+  if (mode === "office") return "Immer Bürotag";
+  if (mode === "homeoffice") return "Immer Homeoffice-Tag";
+  return "Anteilig Büro und Homeoffice";
 }
 
 function dashboardMetric(metricConfig) {

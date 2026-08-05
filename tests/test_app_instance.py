@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import time
+
+from app import main as app_main
 from app import instance
 
 
@@ -14,3 +17,24 @@ def test_app_view_command_is_normalized_and_read_once(tmp_path, monkeypatch):
     assert command["view"] == "vacation"
     assert instance.read_command(command["id"]) is None
     assert instance.normalize_view("nicht-echt") == "dashboard"
+
+
+def test_app_command_watcher_focuses_window_without_waiting_for_javascript(monkeypatch):
+    calls = []
+    commands = [{"id": "1", "view": "dashboard"}, None]
+
+    class FakeApi:
+        def focus_window(self, view=None):
+            calls.append(view)
+
+    def fake_read_command(last_seen_id=None):
+        return commands.pop(0) if commands else None
+
+    monkeypatch.setattr(app_main, "read_command", fake_read_command)
+
+    watcher = app_main.AppCommandWatcher(FakeApi(), interval_seconds=0.001)
+    watcher.start()
+    time.sleep(0.02)
+    watcher.stop()
+
+    assert calls == ["dashboard"]

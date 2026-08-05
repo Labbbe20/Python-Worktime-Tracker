@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from datetime import date as Date
 from pathlib import Path
 
 from app.api import WorktimeApi
 from app import instance
+from common import database
 
 
 APP_JS = Path(__file__).resolve().parents[1] / "app" / "static" / "js" / "app.js"
@@ -35,6 +37,17 @@ def test_calculator_defaults_come_from_work_settings(tmp_path):
     assert defaults["target_minutes_by_weekday"]["5"] == 0
 
 
+def test_calculator_defaults_use_todays_tracked_work_start(tmp_path):
+    db_path = tmp_path / "database.db"
+    api = WorktimeApi(db_path)
+    with database.connect(db_path) as conn:
+        database.add_segment(conn, Date.today().isoformat(), "WORK", "07:12:00", None, "OFFICE")
+
+    defaults = api.calculator_defaults()
+
+    assert defaults["today_work_start_time"] == "07:12"
+
+
 def test_calculator_navigation_and_route_exist():
     html = INDEX_HTML.read_text(encoding="utf-8")
     script = APP_JS.read_text(encoding="utf-8")
@@ -50,6 +63,8 @@ def test_calculator_navigation_and_route_exist():
     assert "nextCalculatorWorkdayDate" in script
     assert "workdays.has(weekdayIndexFromDate(candidate))" in script
     assert 'state.calculatorRows = [createCalculatorRow(defaults.today || isoToday())]' in script
+    assert 'return "07:30"' in script
+    assert "today_work_start_time" in script
     assert "calculator-action-row" in script
     assert "calculator-plan-head" in script
     assert "target_balance" in script
