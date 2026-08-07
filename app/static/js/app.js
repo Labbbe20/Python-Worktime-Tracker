@@ -189,31 +189,20 @@ function dashboardMetrics(data) {
       key: "work",
       label: "Arbeitszeit",
       value: fmtMinutes(data.work_minutes),
-      detailHtml: [
-        detailRow("Soll heute", fmtMinutes(data.target_minutes)),
-        detailRow("Live-Saldo heute", signedMinutes(data.live_day.balance_minutes), data.live_day.balance_minutes >= 0 ? "positive" : "negative"),
-        detailRow("Tagesfenster", data.range),
-      ].join(""),
+      detailHtml: todayWorkDetail(data),
     },
     {
       key: "break",
       label: "Pause",
       value: fmtMinutes(data.break_minutes),
-      detailHtml: [
-        detailRow("Pausenzeit heute", fmtMinutes(data.break_minutes)),
-        detailRow("Offenes Segment", data.live_day.open_type ? `${segmentTypeLabel(data.live_day.open_type)} läuft` : "Keins"),
-        detailText(data.live_day.has_open_segment ? "Der laufende Abschnitt wird live angezeigt." : "Aktuell läuft kein Abschnitt."),
-      ].join(""),
+      detailHtml: todayBreakDetail(data),
     },
     {
       key: "live",
       label: "Heute live",
       value: signedMinutes(data.live_day.balance_minutes),
       signedValue: data.live_day.balance_minutes,
-      detailHtml: [
-        detailText(data.live_day.detail),
-        detailText(data.live_day.note, "muted"),
-      ].join(""),
+      detailHtml: liveDayDetail(data),
     },
     {
       key: "balance",
@@ -221,21 +210,13 @@ function dashboardMetrics(data) {
       value: data.flextime_hours,
       signedValue: data.flextime,
       extraClass: `balance-card ${escapeHtml(data.flextime_status?.class || "")}`,
-      detailHtml: [
-        detailRow("Kontostand", data.flextime_hours, data.flextime >= 0 ? "positive" : "negative"),
-        detailRow("Grenzbereich", data.flextime_status?.label || "0 bis 45 Stunden"),
-        detailText("Angefangene Tage zählen erst nach dem Schließen des offenen Segments ins Konto.", "muted"),
-      ].join(""),
+      detailHtml: flextimeDetail(data),
     },
     {
       key: "vacation",
       label: "Resturlaub",
       value: `${numberDe(data.remaining_vacation)} Tage`,
-      detailHtml: [
-        detailRow("Verbleibend", `${numberDe(data.remaining_vacation)} Tage`),
-        detailRow("Jahr", String(new Date(data.today).getFullYear())),
-        detailText("Urlaubstage werden aus den eingetragenen Abwesenheiten berechnet.", "muted"),
-      ].join(""),
+      detailHtml: vacationDetail(data),
     },
     {
       key: "next_absence",
@@ -249,29 +230,13 @@ function dashboardMetrics(data) {
       label: "Officequote",
       value: `${numberDe(data.location_stats.office_percent)} %`,
       signedValue: data.location_stats.office_requirement_met ? 1 : -1,
-      detailHtml: [
-        detailRow("Zeitraum", officeQuotaPeriodLabel(data.location_stats)),
-        detailRow("Mindestquote", `${numberDe(data.location_stats.target_percent)} %`),
-        detailRow("Büro gesamt", `${numberDe(data.location_stats.office_days)} Tage`),
-        detailRow("Homeoffice gesamt", `${numberDe(data.location_stats.homeoffice_days)} Tage`),
-        detailRow("Getrackt Büro", `${numberDe(data.location_stats.tracked_office_days)} Tage`),
-        detailRow("Getrackt Homeoffice", `${numberDe(data.location_stats.tracked_homeoffice_days)} Tage`),
-        detailRow("Gemischte Tage", `${numberDe(data.location_stats.tracked_mixed_days)} Tage`),
-        detailRow("Gemischt zählt als", officeQuotaMixedModeLabel(data.location_stats.mixed_day_mode)),
-        detailRow("Manuell Büro", `${numberDe(data.location_stats.manual_office_days)} Tage`),
-        detailRow("Manuell Homeoffice", `${numberDe(data.location_stats.manual_homeoffice_days)} Tage`),
-        detailText(data.location_stats.office_requirement_met ? "Die eingestellte Büroquote ist aktuell erfüllt." : "Achtung: Die eingestellte Büroquote ist aktuell unterschritten.", data.location_stats.office_requirement_met ? "positive" : "negative"),
-      ].join(""),
+      detailHtml: officeQuotaDetail(data.location_stats),
     },
     {
       key: "date",
       label: "Datum",
       value: data.today,
-      detailHtml: [
-        detailRow("Heute", data.today),
-        detailRow("Standort", data.location),
-        detailRow("Startdatum", data.settings.tracking_start_date || "automatisch ab erstem Eintrag"),
-      ].join(""),
+      detailHtml: dateDetail(data),
     },
   ];
 }
@@ -2840,28 +2805,228 @@ function absenceCountdownValue(nextAbsence) {
   return `${numberDe(nextAbsence.display_days)} ${nextAbsence.display_days === 1 ? "Tag" : "Tage"}`;
 }
 
+function todayWorkDetail(data) {
+  const detail = data.today_detail || {};
+  const remainingWork = Math.max(0, Number(detail.remaining_work_minutes || 0));
+  const progress = data.target_minutes ? Math.min(100, Math.max(0, (Number(data.work_minutes || 0) / Number(data.target_minutes)) * 100)) : 100;
+  return `
+    <div class="dashboard-insight-detail">
+      <div class="dashboard-insight-cards">
+        ${dashboardInsightCard("Ist", fmtMinutes(data.work_minutes), "reine Arbeitszeit")}
+        ${dashboardInsightCard("Soll", fmtMinutes(data.target_minutes), "für heute")}
+        ${dashboardInsightCard("Rest netto", fmtMinutes(remainingWork), "ohne Restpause")}
+        ${dashboardInsightCard("Saldo", signedMinutes(data.live_day.balance_minutes), "live heute", data.live_day.balance_minutes >= 0 ? "positive" : "negative")}
+      </div>
+      ${dashboardProgress("Tagesfortschritt", progress, `${numberDe(progress)} %`)}
+      <p class="muted">Tagesfenster: ${escapeHtml(data.range)} · Arbeitsegmente: ${numberDe(detail.work_segment_count || 0)}</p>
+    </div>
+  `;
+}
+
+function todayBreakDetail(data) {
+  const detail = data.today_detail || {};
+  const minimum = Number(detail.minimum_break_minutes || data.settings?.daily_break_minutes || 0);
+  const remainingBreak = Math.max(0, Number(detail.remaining_break_minutes || 0));
+  const progress = minimum ? Math.min(100, Math.max(0, (Number(data.break_minutes || 0) / minimum) * 100)) : 100;
+  return `
+    <div class="dashboard-insight-detail">
+      <div class="dashboard-insight-cards">
+        ${dashboardInsightCard("Gemacht", fmtMinutes(data.break_minutes), "Pause heute")}
+        ${dashboardInsightCard("Mindestpause", fmtMinutes(minimum), "aus Einstellungen")}
+        ${dashboardInsightCard("Noch offen", fmtMinutes(remainingBreak), "bis Mindestpause")}
+        ${dashboardInsightCard("Offen", detail.open_segment_label || "Keins", "laufendes Segment")}
+      </div>
+      ${dashboardProgress("Pausenstatus", progress, remainingBreak > 0 ? `${fmtMinutes(remainingBreak)} fehlen` : "Pause erfüllt", remainingBreak > 0 ? "warning" : "success")}
+      <p class="muted">Automatische Pausen werden in der Arbeitszeitberechnung bereits berücksichtigt.</p>
+    </div>
+  `;
+}
+
+function liveDayDetail(data) {
+  const remainingWork = Number(data.live_day?.remaining_work_minutes || data.today_detail?.remaining_work_minutes || 0);
+  const zeroTime = data.live_day?.zero_time || "erreicht";
+  return `
+    <div class="dashboard-insight-detail">
+      <div class="dashboard-insight-cards">
+        ${dashboardInsightCard("Saldo jetzt", signedMinutes(data.live_day.balance_minutes), "heute live", data.live_day.balance_minutes >= 0 ? "positive" : "negative")}
+        ${dashboardInsightCard("±0 ungefähr", zeroTime, "bei Weiterarbeit")}
+        ${dashboardInsightCard("Restarbeit", fmtMinutes(remainingWork), "netto")}
+        ${dashboardInsightCard("Segment", data.today_detail?.open_segment_label || "Keins", "aktueller Status")}
+      </div>
+      <p>${escapeHtml(data.live_day.detail)}</p>
+      <p class="muted">${escapeHtml(data.live_day.note)}</p>
+    </div>
+  `;
+}
+
+function flextimeDetail(data) {
+  const trends = Array.isArray(data.flextime_trends) ? data.flextime_trends : [];
+  const last30 = trends.find(period => period.key === "last_30") || trends[0] || {};
+  return `
+    <div class="dashboard-insight-detail">
+      <div class="dashboard-insight-cards">
+        ${dashboardInsightCard("Kontostand", data.flextime_hours, "aktueller Stand", data.flextime >= 0 ? "positive" : "negative")}
+        ${dashboardInsightCard("Status", data.flextime_status?.label || "0 bis 45 Stunden", "Grenzbereich")}
+        ${dashboardInsightCard("30 Tage", signedMinutes(last30.balance_minutes || 0), "Veränderung", Number(last30.balance_minutes || 0) >= 0 ? "positive" : "negative")}
+        ${dashboardInsightCard("Ø pro Tag", signedMinutes(last30.average_balance_minutes || 0), "Arbeitstage", Number(last30.average_balance_minutes || 0) >= 0 ? "positive" : "negative")}
+      </div>
+      <div class="dashboard-period-cards">
+        ${trends.map(period => flextimePeriodCard(period)).join("")}
+      </div>
+      <p class="muted">Angefangene Tage zählen erst nach dem Schließen des offenen Segments ins Konto.</p>
+    </div>
+  `;
+}
+
+function flextimePeriodCard(period) {
+  const balance = Number(period?.balance_minutes || 0);
+  return `<article class="dashboard-period-card">
+    <div>
+      <span>${escapeHtml(period?.label || "Zeitraum")}</span>
+      <strong class="${balance >= 0 ? "positive" : "negative"}">${signedMinutes(balance)}</strong>
+      <small>${escapeHtml(period?.start_date || "")} bis ${escapeHtml(period?.end_date || "")}</small>
+    </div>
+    <dl>
+      <div><dt>Ist</dt><dd>${fmtMinutes(period?.actual_minutes || 0)}</dd></div>
+      <div><dt>Soll</dt><dd>${fmtMinutes(period?.target_minutes || 0)}</dd></div>
+      <div><dt>Tage</dt><dd>${numberDe(period?.workday_count || 0)}</dd></div>
+      <div><dt>Ø</dt><dd class="${Number(period?.average_balance_minutes || 0) >= 0 ? "positive" : "negative"}">${signedMinutes(period?.average_balance_minutes || 0)}</dd></div>
+    </dl>
+  </article>`;
+}
+
+function vacationDetail(data) {
+  const stats = data.vacation_stats || {};
+  const nextVacation = stats.next_vacation;
+  return `
+    <div class="dashboard-insight-detail">
+      <div class="dashboard-insight-cards">
+        ${dashboardInsightCard("Rest", `${numberDe(stats.remaining_days ?? data.remaining_vacation)} Tage`, `Jahr ${stats.year || new Date(data.today).getFullYear()}`)}
+        ${dashboardInsightCard("Genommen", `${numberDe(stats.used_days || 0)} Tage`, "bis gestern")}
+        ${dashboardInsightCard("Geplant", `${numberDe(stats.planned_days || 0)} Tage`, "ab heute")}
+        ${dashboardInsightCard("Anspruch", `${numberDe((stats.entitlement_days || 0) + (stats.carry_over_days || 0))} Tage`, "inkl. Übertrag")}
+      </div>
+      <div class="dashboard-period-cards">
+        ${dashboardMiniPeriodCard("Krank", `${numberDe(stats.sick_days || 0)} Tage`, "dieses Jahr")}
+        ${dashboardMiniPeriodCard("Gleitzeittage", `${numberDe(stats.flextime_days || 0)} Tage`, "dieses Jahr")}
+        ${dashboardMiniPeriodCard("Nächster Urlaub", nextVacation ? periodLabel(nextVacation.start_date, nextVacation.end_date) : "Keiner", nextVacation ? `${numberDe(nextVacation.counted_days)} Tage` : "nicht geplant")}
+      </div>
+    </div>
+  `;
+}
+
 function absenceCountdownDetail(nextAbsence) {
   if (!nextAbsence?.date) {
     return detailText("Es ist keine zukünftige Abwesenheit eingetragen.", "muted");
   }
-  return [
-    detailRow("Anzeige", `${numberDe(nextAbsence.display_days)} ${nextAbsence.display_label}`),
-    detailRow("Kalendertage", `${numberDe(nextAbsence.calendar_days)} ${nextAbsence.calendar_days === 1 ? "Tag" : "Tage"}`),
-    detailRow("Arbeitstage", `${numberDe(nextAbsence.workdays)} ${nextAbsence.workdays === 1 ? "Tag" : "Tage"}`),
-    detailRow("Typ", `${categoryLabel(nextAbsence.type)}${nextAbsence.half_day ? " · halber Tag" : ""}`),
-    detailRow("Beginn", nextAbsence.start_date),
-    detailRow("Ende", nextAbsence.end_date),
-    detailRow("Gezählte Abwesenheit", `${numberDe(nextAbsence.counted_days)} ${nextAbsence.counted_days === 1 ? "Tag" : "Tage"}`),
-    nextAbsence.note ? detailText(nextAbsence.note) : detailText("Keine Notiz hinterlegt.", "muted"),
-  ].join("");
+  return `
+    <div class="dashboard-insight-detail">
+      <div class="dashboard-insight-cards">
+        ${dashboardInsightCard("Anzeige", `${numberDe(nextAbsence.display_days)} Tage`, nextAbsence.display_label)}
+        ${dashboardInsightCard("Kalender", `${numberDe(nextAbsence.calendar_days)} Tage`, "inkl. Wochenenden")}
+        ${dashboardInsightCard("Arbeitstage", `${numberDe(nextAbsence.workdays)} Tage`, "nach Einstellungen")}
+        ${dashboardInsightCard("Dauer", `${numberDe(nextAbsence.counted_days)} Tage`, categoryLabel(nextAbsence.type))}
+      </div>
+      <div class="dashboard-period-cards">
+        ${dashboardMiniPeriodCard("Zeitraum", periodLabel(nextAbsence.start_date, nextAbsence.end_date), nextAbsence.half_day ? "halber Tag" : "ganzer Tag")}
+        ${dashboardMiniPeriodCard("Notiz", nextAbsence.note || "Keine", "hinterlegt")}
+      </div>
+    </div>
+  `;
 }
 
-function officeQuotaPeriodLabel(stats) {
-  if (!stats) return "Nicht verfügbar";
-  const start = stats.start_date || "";
-  const end = stats.configured_end_date || stats.end_date || "";
-  const countedEnd = stats.end_date && stats.end_date !== end ? `, gezählt bis ${stats.end_date}` : "";
-  return `${start || "Start"} bis ${end || "heute"}${countedEnd}`;
+function dateDetail(data) {
+  const date = new Date(`${data.today}T00:00:00`);
+  const weekday = Number.isNaN(date.getTime()) ? "" : date.toLocaleDateString("de-DE", { weekday: "long" });
+  const week = Number.isNaN(date.getTime()) ? "" : `KW ${isoWeekNumber(date)}`;
+  return `
+    <div class="dashboard-insight-detail">
+      <div class="dashboard-insight-cards">
+        ${dashboardInsightCard("Heute", data.today, weekday)}
+        ${dashboardInsightCard("Kalenderwoche", week || "-", "ISO-Woche")}
+        ${dashboardInsightCard("Standort", data.location, "aktuelle Erkennung")}
+        ${dashboardInsightCard("Trackingstart", data.settings.tracking_start_date || "Automatisch", "ab erstem Eintrag")}
+      </div>
+    </div>
+  `;
+}
+
+function dashboardInsightCard(label, value, hint, valueClass = "") {
+  return `<article class="dashboard-insight-card">
+    <span>${escapeHtml(label)}</span>
+    <strong class="${escapeHtml(valueClass)}">${escapeHtml(value)}</strong>
+    <small>${escapeHtml(hint || "")}</small>
+  </article>`;
+}
+
+function dashboardMiniPeriodCard(label, value, hint) {
+  return `<article class="dashboard-period-card compact">
+    <div>
+      <span>${escapeHtml(label)}</span>
+      <strong>${escapeHtml(value)}</strong>
+      <small>${escapeHtml(hint || "")}</small>
+    </div>
+  </article>`;
+}
+
+function dashboardProgress(label, percent, text, status = "") {
+  const width = Math.max(0, Math.min(100, Number(percent) || 0));
+  return `<div class="dashboard-progress ${escapeHtml(status)}">
+    <div><span>${escapeHtml(label)}</span><strong>${escapeHtml(text)}</strong></div>
+    <div class="dashboard-progress-track" aria-hidden="true"><span style="width: ${width}%"></span></div>
+  </div>`;
+}
+
+function officeQuotaDetail(stats) {
+  const overall = stats?.overall_period || stats || {};
+  const selected = stats?.selected_period || stats || {};
+  const comparisonPeriods = Array.isArray(stats?.comparison_periods) ? stats.comparison_periods : [];
+  const periods = [selected, ...comparisonPeriods].filter(Boolean);
+  const statusText = stats.office_requirement_met
+    ? "Die eingestellte Büroquote ist aktuell erfüllt."
+    : "Achtung: Die eingestellte Büroquote ist aktuell unterschritten.";
+  return `
+    <div class="office-quota-detail">
+      <div class="office-quota-overview">
+        ${officeQuotaSummaryCard("Mindestquote", `${numberDe(stats.target_percent)} %`, "Einstellung")}
+        ${officeQuotaSummaryCard("Büro gesamt", `${numberDe(overall.office_days)} Tage`, "Seit Trackingstart")}
+        ${officeQuotaSummaryCard("Homeoffice gesamt", `${numberDe(overall.homeoffice_days)} Tage`, "Seit Trackingstart")}
+      </div>
+      <div class="office-quota-periods">
+        ${periods.map((period, index) => officeQuotaPeriodCard(period, index === 0)).join("")}
+      </div>
+      <p class="${stats.office_requirement_met ? "positive" : "negative"}">${escapeHtml(statusText)}</p>
+      <p class="muted">Gemischte Tage zählen als: ${escapeHtml(officeQuotaMixedModeLabel(stats.mixed_day_mode))}</p>
+    </div>
+  `;
+}
+
+function officeQuotaSummaryCard(label, value, hint) {
+  return `<article class="office-quota-summary-card">
+    <span>${escapeHtml(label)}</span>
+    <strong>${escapeHtml(value)}</strong>
+    <small>${escapeHtml(hint)}</small>
+  </article>`;
+}
+
+function officeQuotaPeriodCard(period, selected = false) {
+  const office = Number(period?.office_days || 0);
+  const home = Number(period?.homeoffice_days || 0);
+  const total = Math.max(0, office + home);
+  const officeShare = total ? Math.max(0, Math.min(100, (office / total) * 100)) : 0;
+  const range = `${period?.start_date || ""} bis ${period?.end_date || ""}`;
+  return `<article class="office-quota-period-card ${selected ? "selected" : ""}">
+    <div>
+      <span>${selected ? "Aktuelle Einstellung" : escapeHtml(period?.label || "Zeitraum")}</span>
+      <strong class="${period?.office_requirement_met ? "positive" : "negative"}">${numberDe(period?.office_percent || 0)} %</strong>
+      <small>${escapeHtml(selected ? period?.label || "" : range)}</small>
+    </div>
+    <div class="office-quota-bar" aria-hidden="true"><span style="width: ${officeShare}%"></span></div>
+    <dl>
+      <div><dt>Büro</dt><dd>${numberDe(office)} Tage</dd></div>
+      <div><dt>Homeoffice</dt><dd>${numberDe(home)} Tage</dd></div>
+    </dl>
+  </article>`;
 }
 
 function officeQuotaMixedModeLabel(mode) {
@@ -2901,10 +3066,6 @@ function dashboardDetailPanel(metricConfig) {
     </div>
     <div class="dashboard-detail-grid">${metricConfig.detailHtml}</div>
   </section>`;
-}
-
-function detailRow(label, value, valueClass = "") {
-  return `<div class="detail-row"><span>${escapeHtml(label)}</span><strong class="${valueClass}">${escapeHtml(value)}</strong></div>`;
 }
 
 function detailText(value, klass = "") {

@@ -10,6 +10,7 @@ from common import database
 
 
 APP_JS = Path(__file__).resolve().parents[1] / "app" / "static" / "js" / "app.js"
+APP_CSS = Path(__file__).resolve().parents[1] / "app" / "static" / "css" / "app.css"
 
 
 def test_settings_categories_are_split_and_sap_help_explains_source_tables():
@@ -41,6 +42,45 @@ def test_settings_subnavigation_preserves_scroll_position_between_categories():
     assert "restoreSettingsSubnavScroll()" in script
     assert "subnav.scrollTop = state.settingsSubnavScrollTop || 0" in script
     assert "state.settingsSubnavScrollTop = 0" in script
+
+
+def test_dashboard_office_quota_detail_uses_compact_period_cards():
+    script = APP_JS.read_text(encoding="utf-8")
+    styles = APP_CSS.read_text(encoding="utf-8")
+
+    assert "officeQuotaDetail(data.location_stats)" in script
+    assert "officeQuotaSummaryCard" in script
+    assert "officeQuotaPeriodCard" in script
+    assert "comparison_periods" in script
+    assert "Aktuelle Einstellung" in script
+    assert ".office-quota-overview" in styles
+    assert ".office-quota-period-card" in styles
+    assert ".office-quota-bar" in styles
+
+
+def test_dashboard_other_details_use_insight_cards_and_trends():
+    script = APP_JS.read_text(encoding="utf-8")
+    styles = APP_CSS.read_text(encoding="utf-8")
+
+    for helper in (
+        "todayWorkDetail(data)",
+        "todayBreakDetail(data)",
+        "liveDayDetail(data)",
+        "flextimeDetail(data)",
+        "vacationDetail(data)",
+        "dateDetail(data)",
+        "dashboardInsightCard",
+        "dashboardProgress",
+        "flextimePeriodCard",
+    ):
+        assert helper in script
+    assert "Rest netto" in script
+    assert "Mindestpause" in script
+    assert "30 Tage" in script
+    assert "Nächster Urlaub" in script
+    assert ".dashboard-insight-card" in styles
+    assert ".dashboard-period-card" in styles
+    assert ".dashboard-progress-track" in styles
 
 
 def test_api_saves_popup_settings(tmp_path):
@@ -194,3 +234,49 @@ def test_dashboard_reports_next_absence_countdown_with_calendar_days(tmp_path):
     assert result["next_absence"]["calendar_days"] == 10
     assert result["next_absence"]["display_days"] == 10
     assert result["next_absence"]["display_label"] == "Kalendertage"
+
+
+def test_dashboard_returns_rich_stats_for_detail_panels(tmp_path):
+    db_path = tmp_path / "database.db"
+    api = WorktimeApi(db_path)
+    today = Date.today()
+    api.save_settings(
+        {
+            "tracking_start_date": (today - timedelta(days=40)).isoformat(),
+            "daily_break_minutes": "45",
+            "bundesland": "",
+        }
+    )
+    with database.connect(db_path) as conn:
+        database.update_vacation_account(conn, today.year, 30, 2)
+        database.upsert_day_summary(
+            conn,
+            (today - timedelta(days=2)).isoformat(),
+            468,
+            500,
+            45,
+            32,
+            "WORKDAY",
+            "OFFICE",
+        )
+        database.upsert_day_summary(
+            conn,
+            (today - timedelta(days=1)).isoformat(),
+            468,
+            430,
+            45,
+            -38,
+            "WORKDAY",
+            "HOME",
+        )
+        database.upsert_day_type(conn, (today + timedelta(days=7)).isoformat(), "URLAUB", note="Testurlaub")
+
+    result = api.dashboard()
+
+    assert result["today_detail"]["minimum_break_minutes"] == 45
+    assert result["today_detail"]["remaining_work_minutes"] >= 0
+    assert result["live_day"]["remaining_work_minutes"] == result["today_detail"]["remaining_work_minutes"]
+    assert {period["key"] for period in result["flextime_trends"]} == {"last_7", "last_30", "month", "year"}
+    assert result["vacation_stats"]["entitlement_days"] == 30.0
+    assert result["vacation_stats"]["carry_over_days"] == 2.0
+    assert result["vacation_stats"]["next_vacation"]["note"] == "Testurlaub"

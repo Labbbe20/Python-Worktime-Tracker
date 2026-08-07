@@ -374,6 +374,34 @@ def test_location_statistics_can_count_mixed_days_as_one_side(tmp_path):
     assert home_stats["office_percent"] == 0.0
 
 
+def test_location_statistics_include_dashboard_comparison_periods(tmp_path):
+    conn = make_conn(tmp_path)
+    database.set_settings(
+        conn,
+        {
+            "tracking_start_date": "2026-01-01",
+            "office_baseline_days": "2",
+            "homeoffice_baseline_days": "1",
+            "office_quota_period_mode": "rolling_365",
+        },
+    )
+    database.add_segment(conn, "2026-01-10", "WORK", "08:00:00", "16:00:00", "HOME")
+    database.add_segment(conn, "2026-06-01", "WORK", "08:00:00", "16:00:00", "OFFICE")
+    database.add_segment(conn, "2026-07-15", "WORK", "08:00:00", "16:00:00", "OFFICE")
+    calculations.recalculate_range(conn, "2026-01-01", "2026-08-07")
+
+    stats = calculations.get_location_statistics(conn, "2026-08-07")
+
+    assert stats["selected_period"]["label"] == "Eingestellt: Letzte 365 Tage"
+    assert stats["overall_period"]["label"] == "Alles seit Trackingstart"
+    assert stats["overall_period"]["office_days"] == 4
+    assert stats["overall_period"]["homeoffice_days"] == 2
+    labels = [period["label"] for period in stats["comparison_periods"]]
+    assert "Letzte 30 Tage" in labels
+    assert "Letzte 6 Monate" in labels
+    assert "Alles seit Trackingstart" in labels
+
+
 def test_location_statistics_marks_under_50_percent_office(tmp_path):
     conn = make_conn(tmp_path)
     database.set_settings(

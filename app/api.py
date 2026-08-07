@@ -37,6 +37,7 @@ class WorktimeApi:
         self.logger = logging.getLogger("worktime.app.api")
         self._window = None
         self._last_command_id: str | None = None
+        self._allow_window_close = False
 
     def attach_window(self, window) -> None:
         self._window = window
@@ -53,6 +54,7 @@ class WorktimeApi:
             open_segment = next((row for row in segments if row["end_time"] is None), None)
             flextime_minutes = calculations.get_flextime_balance(conn, today)
             flextime_status = classify_balance(flextime_minutes)
+            today_detail = _today_dashboard_detail(summary, segments, settings, open_segment)
             return {
                 "today": today,
                 "range": f"{first_work[:5] if first_work else '--:--'} – {last_end[:5] if last_end else 'läuft'}",
@@ -68,9 +70,12 @@ class WorktimeApi:
                     "label": flextime_status.label,
                 },
                 "remaining_vacation": calculations.get_remaining_vacation(conn, Date.today().year),
+                "vacation_stats": _dashboard_vacation_stats(conn, parse_date(today), settings),
                 "next_absence": _next_absence_countdown(conn, today, settings),
                 "location": _display_location(summary.location),
                 "location_stats": calculations.get_location_statistics(conn, today),
+                "flextime_trends": _dashboard_flextime_trends(conn, parse_date(today), settings),
+                "today_detail": today_detail,
                 "settings": _settings_for_ui(settings),
                 "live_day": _live_day_info(
                     summary.balance_minutes,
@@ -79,6 +84,7 @@ class WorktimeApi:
                     settings,
                     open_segment,
                     bool(first_work),
+                    remaining_work_minutes=today_detail["remaining_work_minutes"],
                 ),
             }
 
@@ -462,13 +468,43 @@ class WorktimeApi:
         if not command:
             return None
         self._last_command_id = command["id"]
+        if command.get("action") == "quit":
+            self.close_window()
+            return {"action": "quit"}
         self.focus_window(command["view"])
-        return {"view": command["view"]}
+        return {"action": "show", "view": command["view"]}
 
     def focus_window(self, view: str | None = None) -> None:
         self._focus_window()
         if view:
             self._set_frontend_view(view)
+
+    def hide_window_on_close(self) -> bool:
+        if self._allow_window_close:
+            return True
+        self.hide_window()
+        return False
+
+    def hide_window(self) -> None:
+        if self._window is None:
+            return
+        try:
+            method = getattr(self._window, "hide", None)
+            if method:
+                method()
+        except Exception:
+            self.logger.debug("App-Fenster konnte nicht versteckt werden", exc_info=True)
+
+    def close_window(self) -> None:
+        if self._window is None:
+            return
+        self._allow_window_close = True
+        try:
+            method = getattr(self._window, "destroy", None)
+            if method:
+                method()
+        except Exception:
+            self.logger.debug("App-Fenster konnte nicht beendet werden", exc_info=True)
 
     def _focus_window(self) -> None:
         if self._window is None:
@@ -517,6 +553,97 @@ def _display_location(value: str | None) -> str:
     return {"OFFICE": "Büro", "HOME": "Homeoffice", "MIXED": "Gemischt", "UNKNOWN": "Unbekannt"}.get(value or "", "Unbekannt")
 
 
+def _today_dashboard_detail(summary, segments, settings: dict[str, str], open_segment) -> dict[str, Any]:
+    try:
+        minimum_break = max(0, int(settings.get("daily_break_minutes", "0") or "0"))
+    except ValueError:
+        minimum_break = 0
+    work_segments = [row for row in segments if row["type"] == "WORK"]
+    break_segments = [row for row in segments if row["type"] == "BREAK"]
+    absence_segments = [row for row in segments if row["type"] == "ABSENCE"]
+    remaining_work = max(0, int(summary.target_minutes) - int(summary.actual_minutes))
+    remaining_break = _remaining_minimum_break_minutes(summary.break_minutes, settings)
+    return {
+        "minimum_break_minutes": minimum_break,
+        "remaining_break_minutes": remaining_break,
+        "remaining_work_minutes": remaining_work,
+        "work_segment_count": len(work_segments),
+        "break_segment_count": len(break_segments),
+        "absence_segment_count": len(absence_segments),
+        "open_segment_label": _segment_type_label(open_segment["type"]) if open_segment else "Keins",
+    }
+
+
+def _dashboard_flextime_trends(conn, today: Date, settings: dict[str, str]) -> list[dict[str, Any]]:
+    tracking_start = calculations.get_effective_tracking_start_date(conn, settings)
+    raw_periods = (
+        ("last_7", "Letzte 7 Tage", today - timedelta(days=6)),
+        ("last_30", "Letzte 30 Tage", today - timedelta(days=29)),
+        ("month", "Dieser Monat", Date(today.year, today.month, 1)),
+        ("year", "Dieses Jahr", Date(today.year, 1, 1)),
+    )
+    trends: list[dict[str, Any]] = []
+    for key, label, raw_start in raw_periods:
+        start = max(raw_start, tracking_start)
+        rows = database.get_day_summaries_between(conn, start.isoformat(), today.isoformat()) if start <= today else []
+        workday_rows = [row for row in rows if row["day_category"] == "WORKDAY"]
+        balance = sum(int(row["balance_minutes"]) for row in rows)
+        actual = sum(int(row["actual_minutes"]) for row in rows)
+        target = sum(int(row["target_minutes"]) for row in rows)
+        day_count = len(workday_rows)
+        trends.append(
+            {
+                "key": key,
+                "label": label,
+                "start_date": start.isoformat(),
+                "end_date": today.isoformat(),
+                "workday_count": day_count,
+                "actual_minutes": actual,
+                "target_minutes": target,
+                "balance_minutes": balance,
+                "average_balance_minutes": round(balance / day_count) if day_count else 0,
+            }
+        )
+    return trends
+
+
+def _dashboard_vacation_stats(conn, today: Date, settings: dict[str, str]) -> dict[str, Any]:
+    year = today.year
+    account = database.get_vacation_account(conn, year)
+    year_start = Date(year, 1, 1)
+    year_end = Date(year, 12, 31)
+    yesterday = today - timedelta(days=1)
+    used = calculations.get_day_type_days(conn, year, "URLAUB", year_start.isoformat(), yesterday.isoformat()) if yesterday >= year_start else 0.0
+    planned = calculations.get_day_type_days(conn, year, "URLAUB", today.isoformat(), f"{year}-12-31")
+    sick = calculations.get_day_type_days(conn, year, "KRANK", year_start.isoformat(), today.isoformat())
+    flextime_days = calculations.get_day_type_days(conn, year, "GLEITZEITTAG", year_start.isoformat(), year_end.isoformat())
+    next_vacation = _next_day_type_range(conn, today, "URLAUB")
+    return {
+        "year": year,
+        "entitlement_days": float(account["entitlement_days"]),
+        "carry_over_days": float(account["carry_over_from_previous"]),
+        "used_days": used,
+        "planned_days": planned,
+        "remaining_days": calculations.get_remaining_vacation(conn, year),
+        "sick_days": sick,
+        "flextime_days": flextime_days,
+        "next_vacation": next_vacation,
+    }
+
+
+def _next_day_type_range(conn, today: Date, day_type: str) -> dict[str, Any] | None:
+    row = conn.execute(
+        """
+        SELECT * FROM day_types
+        WHERE date >= ? AND type = ?
+        ORDER BY date
+        LIMIT 1
+        """,
+        (today.isoformat(), day_type),
+    ).fetchone()
+    return _expand_day_type_range(conn, dict(row)) if row else None
+
+
 def _live_day_info(
     balance_minutes: int,
     target_minutes: int,
@@ -525,6 +652,7 @@ def _live_day_info(
     open_segment,
     has_work_today: bool,
     now: datetime | None = None,
+    remaining_work_minutes: int | None = None,
 ) -> dict[str, Any]:
     note = "Der laufende Tag ist noch nicht im Gleitzeitkonto enthalten."
     zero_time = None
@@ -552,6 +680,7 @@ def _live_day_info(
         "detail": detail,
         "has_open_segment": bool(open_segment),
         "open_type": open_segment["type"] if open_segment else None,
+        "remaining_work_minutes": max(0, int(remaining_work_minutes if remaining_work_minutes is not None else target_minutes - max(0, balance_minutes))),
     }
 
 
@@ -561,6 +690,10 @@ def _remaining_minimum_break_minutes(current_break_minutes: int, settings: dict[
     except ValueError:
         configured_break = 0
     return max(0, configured_break - max(0, int(current_break_minutes)))
+
+
+def _segment_type_label(value: str | None) -> str:
+    return {"WORK": "Arbeit", "BREAK": "Pause", "ABSENCE": "Abwesenheit"}.get(value or "", "Unbekannt")
 
 
 def _next_absence_countdown(conn, today: str, settings: dict[str, str]) -> dict[str, Any] | None:

@@ -59,7 +59,10 @@ class AppCommandWatcher:
                 if not command:
                     continue
                 self._last_command_id = command["id"]
-                self.api.focus_window(command["view"])
+                if command.get("action") == "quit":
+                    self.api.close_window()
+                else:
+                    self.api.focus_window(command["view"])
             except Exception:
                 logger.debug("App-Kommando konnte nicht direkt verarbeitet werden", exc_info=True)
 
@@ -103,6 +106,8 @@ def main() -> None:
         background_color="#f8fafc",
     )
     api.attach_window(window)
+    if _keep_alive_on_close():
+        window.events.closing += api.hide_window_on_close
     command_watcher = AppCommandWatcher(api)
     command_watcher.start()
     logging.getLogger("worktime.app").info("App-Fenster gestartet: %s", window.title)
@@ -119,6 +124,10 @@ def _initial_view_from_args() -> str:
         if index + 1 < len(sys.argv):
             return normalize_view(sys.argv[index + 1])
     return normalize_view("dashboard")
+
+
+def _keep_alive_on_close() -> bool:
+    return "--keep-alive-on-close" in sys.argv or "--hidden" in sys.argv
 
 
 def _app_icon_path() -> str | None:

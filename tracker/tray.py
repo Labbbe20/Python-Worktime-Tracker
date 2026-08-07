@@ -8,7 +8,7 @@ import sys
 import webbrowser
 from pathlib import Path
 
-from app.instance import another_instance_is_running, request_app_view
+from app.instance import another_instance_is_running, request_app_quit, request_app_view
 from common import database
 from common.config import LOG_DIR, PROJECT_ROOT
 from tracker import popups
@@ -95,6 +95,8 @@ def run_tray(recorder: WorktimeRecorder, notifier: NotificationCenter, logger: l
         webbrowser.open(path.resolve().as_uri())
 
     def quit_app(icon, item) -> None:
+        if another_instance_is_running():
+            request_app_quit()
         icon.stop()
 
     def break_label(item) -> str:
@@ -156,6 +158,7 @@ def _app_launch_command(view: str | None = None, *, hidden: bool = False) -> lis
             command.append("--app")
     if hidden:
         command.append("--hidden")
+    command.append("--keep-alive-on-close")
     if view:
         command.extend(["--view", view])
     return command

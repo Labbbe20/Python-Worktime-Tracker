@@ -28,14 +28,22 @@ def normalize_view(view: str | None) -> str:
 
 
 def request_app_view(view: str | None) -> Path:
+    return _write_command({"action": "show", "view": normalize_view(view)})
+
+
+def request_app_quit() -> Path:
+    return _write_command({"action": "quit", "view": "dashboard"})
+
+
+def _write_command(payload: dict[str, Any]) -> Path:
     ensure_data_dirs()
-    payload = {
+    final_payload = {
         "id": uuid.uuid4().hex,
-        "view": normalize_view(view),
+        **payload,
         "created_at": time.time(),
     }
     tmp_path = COMMAND_FILE.with_suffix(".tmp")
-    tmp_path.write_text(json.dumps(payload), encoding="utf-8")
+    tmp_path.write_text(json.dumps(final_payload), encoding="utf-8")
     tmp_path.replace(COMMAND_FILE)
     return COMMAND_FILE
 
@@ -69,6 +77,7 @@ def read_command(last_seen_id: str | None = None) -> dict[str, Any] | None:
         return None
     if payload.get("id") == last_seen_id:
         return None
+    payload["action"] = payload.get("action") if payload.get("action") in {"show", "quit"} else "show"
     payload["view"] = normalize_view(payload.get("view"))
     return payload
 

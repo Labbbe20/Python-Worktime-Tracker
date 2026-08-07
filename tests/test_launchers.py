@@ -57,6 +57,7 @@ def test_tray_launches_same_executable_when_frozen(monkeypatch):
     assert tray._app_launch_command("settings") == [
         r"C:\Tools\ArbeitszeitTracker.exe",
         "--app",
+        "--keep-alive-on-close",
         "--view",
         "settings",
     ]
@@ -70,6 +71,7 @@ def test_tray_can_launch_app_hidden_when_frozen(monkeypatch):
         r"C:\Tools\ArbeitszeitTracker.exe",
         "--app",
         "--hidden",
+        "--keep-alive-on-close",
     ]
 
 
@@ -79,4 +81,4 @@ def test_tray_uses_app_script_when_not_frozen(monkeypatch):
 
     command = tray._app_launch_command("vacation")
 
-    assert command[-4:] == [str(PROJECT_ROOT / "main.pyw"), "--app", "--view", "vacation"]
+    assert command[-5:] == [str(PROJECT_ROOT / "main.pyw"), "--app", "--keep-alive-on-close", "--view", "vacation"]

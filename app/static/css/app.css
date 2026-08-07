@@ -658,15 +658,8 @@ legend {
   grid-column: 1 / -1;
 }
 
-.dashboard-detail-grid .detail-row,
 .dashboard-detail-grid p {
   animation: dashboard-detail-item-in 280ms ease both;
-}
-
-.detail-row strong {
-  min-width: 0;
-  overflow-wrap: anywhere;
-  text-align: right;
 }
 
 .calendar-detail-panel > .stack,
@@ -697,23 +690,196 @@ legend {
   font-weight: 700;
 }
 
-.detail-row {
+.office-quota-detail {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: 12px;
+  margin-top: 8px;
+}
+
+.dashboard-insight-detail {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: 12px;
+  margin-top: 8px;
+}
+
+.dashboard-insight-cards,
+.dashboard-period-cards,
+.office-quota-overview,
+.office-quota-periods {
+  display: grid;
+  gap: 10px;
+}
+
+.dashboard-insight-cards {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.dashboard-period-cards {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.office-quota-overview {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.office-quota-periods {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.dashboard-insight-card,
+.dashboard-period-card,
+.office-quota-summary-card,
+.office-quota-period-card {
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--surface), var(--primary) 4%);
+}
+
+.dashboard-insight-card,
+.office-quota-summary-card {
+  display: grid;
+  gap: 3px;
+  padding: 12px;
+}
+
+.dashboard-insight-card span,
+.dashboard-period-card span,
+.dashboard-insight-card small,
+.dashboard-period-card small,
+.dashboard-period-card dt,
+.office-quota-summary-card span,
+.office-quota-period-card span,
+.office-quota-summary-card small,
+.office-quota-period-card small,
+.office-quota-period-card dt {
+  color: var(--muted);
+  font-weight: 800;
+}
+
+.dashboard-insight-card span,
+.dashboard-period-card span,
+.dashboard-period-card dt,
+.office-quota-summary-card span,
+.office-quota-period-card span,
+.office-quota-period-card dt {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0;
+}
+
+.dashboard-insight-card strong,
+.dashboard-period-card strong,
+.office-quota-summary-card strong,
+.office-quota-period-card strong {
+  color: var(--text);
+  font-size: 24px;
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+}
+
+.dashboard-insight-card small,
+.dashboard-period-card small,
+.office-quota-summary-card small,
+.office-quota-period-card small {
+  min-width: 0;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.dashboard-period-card,
+.office-quota-period-card {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+}
+
+.dashboard-period-card.compact {
+  align-content: start;
+}
+
+.office-quota-period-card.selected {
+  border-color: color-mix(in srgb, var(--primary), var(--border) 35%);
+  background: color-mix(in srgb, var(--surface), var(--primary) 8%);
+}
+
+.dashboard-period-card > div:first-child,
+.office-quota-period-card > div:first-child {
+  display: grid;
+  gap: 4px;
+}
+
+.dashboard-progress {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--surface), var(--primary) 3%);
+}
+
+.dashboard-progress > div:first-child {
   display: flex;
   justify-content: space-between;
   gap: 12px;
-  padding-top: 10px;
-}
-
-.detail-row span {
   color: var(--muted);
-  font-size: 13px;
-  font-weight: 700;
+  font-size: 12px;
+  font-weight: 800;
+  text-transform: uppercase;
 }
 
-.detail-row strong {
+.dashboard-progress strong {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.dashboard-progress-track,
+.office-quota-bar {
+  height: 8px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--surface-2), var(--muted) 14%);
+}
+
+.dashboard-progress-track span,
+.office-quota-bar span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--primary), var(--success));
+  transition: width 220ms ease;
+}
+
+.dashboard-progress.success .dashboard-progress-track span {
+  background: linear-gradient(90deg, var(--success), color-mix(in srgb, var(--success), var(--primary) 35%));
+}
+
+.dashboard-progress.warning .dashboard-progress-track span {
+  background: linear-gradient(90deg, var(--warning), var(--primary));
+}
+
+.dashboard-period-card dl,
+.office-quota-period-card dl {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
   margin: 0;
+}
+
+.dashboard-period-card dl div,
+.office-quota-period-card dl div {
+  min-width: 0;
+}
+
+.dashboard-period-card dd,
+.office-quota-period-card dd {
+  margin: 2px 0 0;
+  color: var(--text);
   font-size: 14px;
-  text-align: right;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
 }
 
 @keyframes dashboard-detail-in {
@@ -2367,6 +2533,16 @@ button.calculator-remove:disabled {
   }
 
   .dashboard-detail-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .dashboard-insight-cards {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .dashboard-period-cards,
+  .office-quota-overview,
+  .office-quota-periods {
     grid-template-columns: 1fr;
   }
 
