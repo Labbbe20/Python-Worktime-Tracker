@@ -2136,6 +2136,23 @@ function renderOfficeQuotaSettings(settings) {
       <input name="homeoffice_baseline_days" type="text" inputmode="decimal" value="${escapeHtml(settings.homeoffice_baseline_days || "0")}" placeholder="z. B. 38">
       <small class="help-text">Tage vor der Nutzung, die in die Homeofficequote einfließen sollen.</small>
     </label>
+    <label>Zeitraum der manuellen Tage
+      <select name="office_baseline_period_mode">
+        <option value="all" ${settings.office_baseline_period_mode !== "current_year" && settings.office_baseline_period_mode !== "rolling_365" && settings.office_baseline_period_mode !== "custom" ? "selected" : ""}>Alles seit Trackingstart</option>
+        <option value="current_year" ${settings.office_baseline_period_mode === "current_year" ? "selected" : ""}>Aktuelles Kalenderjahr</option>
+        <option value="rolling_365" ${settings.office_baseline_period_mode === "rolling_365" ? "selected" : ""}>Letzte 365 Tage</option>
+        <option value="custom" ${settings.office_baseline_period_mode === "custom" ? "selected" : ""}>Eigener Zeitraum</option>
+      </select>
+      <small class="help-text">Die manuellen Tage zählen nur vollständig mit, wenn dieser Zeitraum komplett im ausgewerteten Officequote-Zeitraum liegt.</small>
+    </label>
+    <label class="conditional-field" data-show-when="office_baseline_period_mode:custom">
+      Manuelle Tage von
+      <input name="office_baseline_custom_start" type="date" value="${escapeHtml(settings.office_baseline_custom_start || "")}">
+    </label>
+    <label class="conditional-field" data-show-when="office_baseline_period_mode:custom">
+      Manuelle Tage bis
+      <input name="office_baseline_custom_end" type="date" value="${escapeHtml(settings.office_baseline_custom_end || "")}">
+    </label>
     <label>Mindestquote Büro (%)
       <input name="office_quota_target_percent" type="number" min="0" max="100" step="0.1" value="${escapeHtml(settings.office_quota_target_percent || "50")}">
       <small class="help-text">Schwelle, ab der die Dashboard-Kachel als erfüllt markiert wird.</small>
@@ -2155,7 +2172,7 @@ function renderOfficeQuotaSettings(settings) {
         <option value="rolling_365" ${settings.office_quota_period_mode === "rolling_365" ? "selected" : ""}>Letzte 365 Tage</option>
         <option value="custom" ${settings.office_quota_period_mode === "custom" ? "selected" : ""}>Eigener Zeitraum</option>
       </select>
-      <small class="help-text">Manuelle Büro-/Homeoffice-Tage werden nur bei „Alles seit Trackingstart“ eingerechnet.</small>
+      <small class="help-text">Die Dashboard-Kachel nutzt diesen Zeitraum. Manuelle Startwerte ohne tagesgenaue Zuordnung werden bei Teilzeiträumen nicht geraten.</small>
     </label>
     <label class="conditional-field" data-show-when="office_quota_period_mode:custom">
       Officequote von
@@ -2978,10 +2995,10 @@ function dashboardProgress(label, percent, text, status = "") {
 }
 
 function officeQuotaDetail(stats) {
-  const overall = stats?.overall_period || stats || {};
   const selected = stats?.selected_period || stats || {};
   const comparisonPeriods = Array.isArray(stats?.comparison_periods) ? stats.comparison_periods : [];
   const periods = [selected, ...comparisonPeriods].filter(Boolean);
+  const selectedHint = officeQuotaPeriodHint(selected);
   const statusText = stats.office_requirement_met
     ? "Die eingestellte Büroquote ist aktuell erfüllt."
     : "Achtung: Die eingestellte Büroquote ist aktuell unterschritten.";
@@ -2989,16 +3006,35 @@ function officeQuotaDetail(stats) {
     <div class="office-quota-detail">
       <div class="office-quota-overview">
         ${officeQuotaSummaryCard("Mindestquote", `${numberDe(stats.target_percent)} %`, "Einstellung")}
-        ${officeQuotaSummaryCard("Büro gesamt", `${numberDe(overall.office_days)} Tage`, "Seit Trackingstart")}
-        ${officeQuotaSummaryCard("Homeoffice gesamt", `${numberDe(overall.homeoffice_days)} Tage`, "Seit Trackingstart")}
+        ${officeQuotaSummaryCard("Büro im Zeitraum", `${numberDe(selected.office_days)} Tage`, selectedHint)}
+        ${officeQuotaSummaryCard("Homeoffice im Zeitraum", `${numberDe(selected.homeoffice_days)} Tage`, selectedHint)}
       </div>
       <div class="office-quota-periods">
         ${periods.map((period, index) => officeQuotaPeriodCard(period, index === 0)).join("")}
       </div>
       <p class="${stats.office_requirement_met ? "positive" : "negative"}">${escapeHtml(statusText)}</p>
+      <p class="${officeBaselineStatusClass(selected)}">Manuelle Startwerte: ${escapeHtml(officeBaselinePeriodLabel(selected))}</p>
       <p class="muted">Gemischte Tage zählen als: ${escapeHtml(officeQuotaMixedModeLabel(stats.mixed_day_mode))}</p>
     </div>
   `;
+}
+
+function officeQuotaPeriodHint(period) {
+  const label = String(period?.label || "Aktueller Zeitraum").replace(/^Eingestellt:\s*/, "");
+  if (!period?.start_date || !period?.end_date) return label;
+  return `${label} · ${period.start_date} bis ${period.end_date}`;
+}
+
+function officeBaselinePeriodLabel(period) {
+  if (period?.manual_baseline_status === "empty") return "keine manuellen Startwerte hinterlegt";
+  const range = `${period?.manual_baseline_start_date || ""} bis ${period?.manual_baseline_end_date || ""}`;
+  if (period?.includes_manual_baseline) return `${range} · vollständig berücksichtigt`;
+  return `${range} · nicht gezählt, weil keine tagesgenaue Zuordnung möglich ist`;
+}
+
+function officeBaselineStatusClass(period) {
+  if (period?.manual_baseline_status === "excluded") return "negative";
+  return "muted";
 }
 
 function officeQuotaSummaryCard(label, value, hint) {
@@ -3014,19 +3050,43 @@ function officeQuotaPeriodCard(period, selected = false) {
   const home = Number(period?.homeoffice_days || 0);
   const total = Math.max(0, office + home);
   const officeShare = total ? Math.max(0, Math.min(100, (office / total) * 100)) : 0;
+  const targetShare = Math.max(0, Math.min(100, Number(period?.target_percent || 0)));
+  const warningStart = Math.max(0, targetShare - 5);
   const range = `${period?.start_date || ""} bis ${period?.end_date || ""}`;
-  return `<article class="office-quota-period-card ${selected ? "selected" : ""}">
+  const quotaStatus = officeQuotaStatus(period);
+  return `<article class="office-quota-period-card ${selected ? "selected" : ""} ${quotaStatus.cardClass}">
     <div>
       <span>${selected ? "Aktuelle Einstellung" : escapeHtml(period?.label || "Zeitraum")}</span>
-      <strong class="${period?.office_requirement_met ? "positive" : "negative"}">${numberDe(period?.office_percent || 0)} %</strong>
+      <strong class="${quotaStatus.textClass}">${numberDe(period?.office_percent || 0)} %</strong>
       <small>${escapeHtml(selected ? period?.label || "" : range)}</small>
     </div>
-    <div class="office-quota-bar" aria-hidden="true"><span style="width: ${officeShare}%"></span></div>
+    <div class="office-quota-bar" style="--office-share: ${officeShare}%; --quota-warning-start: ${warningStart}%; --quota-target: ${targetShare}%;" aria-hidden="true"><span></span></div>
     <dl>
       <div><dt>Büro</dt><dd>${numberDe(office)} Tage</dd></div>
       <div><dt>Homeoffice</dt><dd>${numberDe(home)} Tage</dd></div>
+      <div><dt>Manuell</dt><dd>${officeQuotaManualLabel(period)}</dd></div>
+      <div><dt>Status</dt><dd class="${period?.manual_baseline_status === "excluded" ? "negative" : ""}">${officeQuotaManualStatusLabel(period)}</dd></div>
     </dl>
   </article>`;
+}
+
+function officeQuotaStatus(period) {
+  const percent = Number(period?.office_percent || 0);
+  const target = Number(period?.target_percent || 0);
+  if (percent >= target) return { cardClass: "quota-ok", textClass: "positive" };
+  if (percent >= Math.max(0, target - 5)) return { cardClass: "quota-warning", textClass: "warning" };
+  return { cardClass: "quota-danger", textClass: "negative" };
+}
+
+function officeQuotaManualLabel(period) {
+  if (period?.manual_baseline_status === "empty") return "Keine";
+  if (period?.includes_manual_baseline) return `${numberDe((period?.manual_office_days || 0) + (period?.manual_homeoffice_days || 0))} Tage`;
+  return `${numberDe(period?.manual_baseline_excluded_days || 0)} nicht gezählt`;
+}
+
+function officeQuotaManualStatusLabel(period) {
+  if (period?.manual_baseline_status === "empty") return "Keine";
+  return period?.includes_manual_baseline ? "Gezählt" : "Ohne";
 }
 
 function officeQuotaMixedModeLabel(mode) {

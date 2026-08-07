@@ -736,6 +736,7 @@ legend {
   border: 1px solid var(--border);
   border-radius: 8px;
   background: color-mix(in srgb, var(--surface), var(--primary) 4%);
+  transition: transform 180ms var(--ease-out), border-color 180ms ease, background 180ms ease, box-shadow 180ms ease;
 }
 
 .dashboard-insight-card,
@@ -818,6 +819,7 @@ legend {
   border: 1px solid var(--border);
   border-radius: 8px;
   background: color-mix(in srgb, var(--surface), var(--primary) 3%);
+  transition: transform 180ms var(--ease-out), border-color 180ms ease, background 180ms ease, box-shadow 180ms ease;
 }
 
 .dashboard-progress > div:first-child {
@@ -835,21 +837,70 @@ legend {
   font-variant-numeric: tabular-nums;
 }
 
-.dashboard-progress-track,
-.office-quota-bar {
+.dashboard-progress-track {
   height: 8px;
   overflow: hidden;
   border-radius: 999px;
   background: color-mix(in srgb, var(--surface-2), var(--muted) 14%);
 }
 
-.dashboard-progress-track span,
-.office-quota-bar span {
+.office-quota-bar {
+  position: relative;
+  height: 10px;
+  overflow: visible;
+  border-radius: 999px;
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--danger), #000 18%) 0%,
+    var(--danger) 16%,
+    var(--warning) var(--quota-warning-start, 45%),
+    var(--success) var(--quota-target, 50%),
+    color-mix(in srgb, var(--success), var(--primary) 16%) 100%
+  );
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--text), transparent 82%);
+  isolation: isolate;
+}
+
+.office-quota-bar::before {
+  content: "";
+  position: absolute;
+  z-index: 2;
+  top: -3px;
+  bottom: -3px;
+  left: var(--quota-target, 50%);
+  width: 2px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--text), var(--surface) 22%);
+  opacity: 0.72;
+  transform: translateX(-1px);
+}
+
+.office-quota-bar::after {
+  content: "";
+  position: absolute;
+  z-index: 4;
+  top: 50%;
+  left: var(--office-share, 0%);
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--surface);
+  border-radius: 999px;
+  background: var(--text);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--primary), transparent 46%), 0 6px 14px color-mix(in srgb, var(--text), transparent 76%);
+  transform: translate(-50%, -50%);
+  transition: left 220ms var(--ease-out), transform 180ms var(--ease-out), box-shadow 180ms ease;
+}
+
+.dashboard-progress-track span {
   display: block;
   height: 100%;
   border-radius: inherit;
   background: linear-gradient(90deg, var(--primary), var(--success));
   transition: width 220ms ease;
+}
+
+.office-quota-bar span {
+  display: none;
 }
 
 .dashboard-progress.success .dashboard-progress-track span {
@@ -880,6 +931,24 @@ legend {
   font-size: 14px;
   font-weight: 800;
   font-variant-numeric: tabular-nums;
+}
+
+@media (hover: hover) {
+  .dashboard-insight-card:hover,
+  .dashboard-period-card:hover,
+  .dashboard-progress:hover,
+  .office-quota-summary-card:hover,
+  .office-quota-period-card:hover {
+    transform: translateY(-2px);
+    border-color: color-mix(in srgb, var(--primary), var(--border) 32%);
+    background: color-mix(in srgb, var(--surface), var(--primary) 7%);
+    box-shadow: 0 14px 26px color-mix(in srgb, var(--text), transparent 88%);
+  }
+
+  .office-quota-period-card:hover .office-quota-bar::after {
+    transform: translate(-50%, -50%) scale(1.14);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary), transparent 38%), 0 8px 18px color-mix(in srgb, var(--text), transparent 70%);
+  }
 }
 
 @keyframes dashboard-detail-in {
@@ -2081,6 +2150,10 @@ button.calculator-remove:disabled {
 
 .positive {
   color: var(--success);
+}
+
+.warning {
+  color: var(--warning);
 }
 
 .negative {

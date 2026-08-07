@@ -426,6 +426,9 @@ def test_location_statistics_uses_configured_year_period_and_threshold(tmp_path)
         {
             "office_baseline_days": "10",
             "homeoffice_baseline_days": "0",
+            "office_baseline_period_mode": "custom",
+            "office_baseline_custom_start": "2025-01-01",
+            "office_baseline_custom_end": "2025-12-31",
             "office_quota_period_mode": "current_year",
             "office_quota_target_percent": "60",
         },
@@ -442,6 +445,81 @@ def test_location_statistics_uses_configured_year_period_and_threshold(tmp_path)
     assert stats["manual_office_days"] == 0.0
     assert stats["office_percent"] == 0.0
     assert stats["office_requirement_met"] is False
+
+
+def test_location_statistics_counts_manual_baseline_for_configured_current_year(tmp_path):
+    conn = make_conn(tmp_path)
+    database.set_settings(
+        conn,
+        {
+            "office_baseline_days": "70",
+            "homeoffice_baseline_days": "55",
+            "office_baseline_period_mode": "current_year",
+            "office_quota_period_mode": "current_year",
+        },
+    )
+
+    stats = calculations.get_location_statistics(conn, "2026-08-07")
+
+    assert stats["start_date"] == "2026-01-01"
+    assert stats["manual_baseline_start_date"] == "2026-01-01"
+    assert stats["manual_baseline_end_date"] == "2026-08-07"
+    assert stats["manual_baseline_factor"] == 1.0
+    assert stats["manual_baseline_status"] == "included"
+    assert stats["manual_office_days"] == 70.0
+    assert stats["manual_homeoffice_days"] == 55.0
+    assert stats["office_percent"] == 56.0
+
+
+def test_location_statistics_comparison_periods_do_not_prorate_manual_baseline(tmp_path):
+    conn = make_conn(tmp_path)
+    database.set_settings(
+        conn,
+        {
+            "office_baseline_days": "70",
+            "homeoffice_baseline_days": "55",
+            "office_baseline_period_mode": "current_year",
+            "office_quota_period_mode": "current_year",
+        },
+    )
+    database.add_segment(conn, "2026-08-06", "WORK", "08:00:00", "16:00:00", "OFFICE")
+    calculations.recalculate_day(conn, "2026-08-06")
+
+    stats = calculations.get_location_statistics(conn, "2026-08-07")
+    last_30 = next(period for period in stats["comparison_periods"] if period["key"] == "last_30")
+
+    assert stats["selected_period"]["manual_baseline_status"] == "included"
+    assert stats["selected_period"]["office_days"] == 71.0
+    assert last_30["manual_baseline_status"] == "excluded"
+    assert last_30["manual_baseline_excluded_days"] == 125.0
+    assert last_30["office_days"] == 1.0
+    assert last_30["office_percent"] == 100.0
+
+
+def test_location_statistics_excludes_manual_baseline_for_partial_overlap(tmp_path):
+    conn = make_conn(tmp_path)
+    database.set_settings(
+        conn,
+        {
+            "office_baseline_days": "10",
+            "homeoffice_baseline_days": "0",
+            "office_baseline_period_mode": "custom",
+            "office_baseline_custom_start": "2026-01-01",
+            "office_baseline_custom_end": "2026-01-10",
+            "office_quota_period_mode": "custom",
+            "office_quota_custom_start": "2026-01-06",
+            "office_quota_custom_end": "2026-01-10",
+        },
+    )
+
+    stats = calculations.get_location_statistics(conn, "2026-01-10")
+
+    assert stats["manual_baseline_factor"] == 0.0
+    assert stats["manual_baseline_status"] == "excluded"
+    assert stats["manual_baseline_excluded_days"] == 10.0
+    assert stats["manual_office_days"] == 0.0
+    assert stats["office_days"] == 0.0
+    assert stats["office_percent"] == 0.0
 
 
 def test_tracking_start_date_ignores_days_before_start(tmp_path):

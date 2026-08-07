@@ -761,6 +761,7 @@ def _settings_for_ui(settings: dict[str, str]) -> dict[str, str]:
     result["daily_break_minutes"] = str(break_minutes)
     result["office_baseline_days"] = _setting_float_for_ui(result.get("office_baseline_days", "0"))
     result["homeoffice_baseline_days"] = _setting_float_for_ui(result.get("homeoffice_baseline_days", "0"))
+    result["office_baseline_period_mode"] = result.get("office_baseline_period_mode", "all") or "all"
     result["office_quota_target_percent"] = _setting_float_for_ui(result.get("office_quota_target_percent", "50"))
     result["office_start_buffer_minutes"] = _setting_int_for_ui(result.get("office_start_buffer_minutes", "0"))
     result["home_start_buffer_minutes"] = _setting_int_for_ui(result.get("home_start_buffer_minutes", "0"))
@@ -809,7 +810,12 @@ def _normalize_settings_input(values: dict[str, Any]) -> dict[str, str]:
             normalized["office_quota_target_percent"],
             "Officequote-Schwelle",
         )
-    for key in ("office_quota_custom_start", "office_quota_custom_end"):
+    for key in (
+        "office_baseline_custom_start",
+        "office_baseline_custom_end",
+        "office_quota_custom_start",
+        "office_quota_custom_end",
+    ):
         if normalized.get(key):
             parse_date(normalized[key])
     if "initial_flextime_hours" in normalized:
@@ -837,6 +843,7 @@ def _normalize_settings_input(values: dict[str, Any]) -> dict[str, str]:
         ("work_popup_timing", {"startup", "work_end", "custom"}),
         ("daily_info_popup_mode", {"off", "work_end", "custom"}),
         ("dashboard_absence_countdown_mode", {"workdays", "calendar_days"}),
+        ("office_baseline_period_mode", {"all", "current_year", "rolling_365", "custom"}),
         ("office_quota_period_mode", {"all", "current_year", "rolling_365", "custom"}),
         ("office_quota_mixed_day_mode", {"split", "office", "homeoffice"}),
     ):

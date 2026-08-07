@@ -51,11 +51,28 @@ def test_dashboard_office_quota_detail_uses_compact_period_cards():
     assert "officeQuotaDetail(data.location_stats)" in script
     assert "officeQuotaSummaryCard" in script
     assert "officeQuotaPeriodCard" in script
+    assert "officeQuotaPeriodHint" in script
+    assert "officeQuotaStatus" in script
+    assert "quota-warning" in script
+    assert "--office-share" in script
+    assert "--quota-target" in script
+    assert "Büro im Zeitraum" in script
+    assert "Homeoffice im Zeitraum" in script
     assert "comparison_periods" in script
     assert "Aktuelle Einstellung" in script
+    assert "officeBaselinePeriodLabel" in script
+    assert "Zeitraum der manuellen Tage" in script
+    assert "office_baseline_period_mode" in script
     assert ".office-quota-overview" in styles
     assert ".office-quota-period-card" in styles
     assert ".office-quota-bar" in styles
+    assert ".office-quota-bar::after" in styles
+    assert ".office-quota-bar::before" in styles
+    assert "left: var(--office-share" in styles
+    assert "translate(-50%, -50%)" in styles
+    assert "var(--quota-warning-start" in styles
+    assert "var(--quota-target" in styles
+    assert ".office-quota-period-card:hover .office-quota-bar::after" in styles
 
 
 def test_dashboard_other_details_use_insight_cards_and_trends():
@@ -81,6 +98,9 @@ def test_dashboard_other_details_use_insight_cards_and_trends():
     assert ".dashboard-insight-card" in styles
     assert ".dashboard-period-card" in styles
     assert ".dashboard-progress-track" in styles
+    assert ".dashboard-insight-card:hover" in styles
+    assert ".dashboard-period-card:hover" in styles
+    assert ".dashboard-progress:hover" in styles
 
 
 def test_api_saves_popup_settings(tmp_path):
@@ -158,6 +178,7 @@ def test_api_saves_office_quota_and_preload_settings(tmp_path):
         {
             "office_quota_target_percent": "60,5",
             "office_quota_period_mode": "rolling_365",
+            "office_baseline_period_mode": "current_year",
             "office_quota_mixed_day_mode": "homeoffice",
             "preload_app_on_tracker_start": "0",
         }
@@ -165,6 +186,7 @@ def test_api_saves_office_quota_and_preload_settings(tmp_path):
 
     assert result["settings"]["office_quota_target_percent"] == "60.5"
     assert result["settings"]["office_quota_period_mode"] == "rolling_365"
+    assert result["settings"]["office_baseline_period_mode"] == "current_year"
     assert result["settings"]["office_quota_mixed_day_mode"] == "homeoffice"
     assert result["settings"]["preload_app_on_tracker_start"] == "0"
 

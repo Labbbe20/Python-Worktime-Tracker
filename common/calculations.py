@@ -385,6 +385,7 @@ def get_location_statistics(conn, through_date: str | None = None) -> dict[str, 
     settings = database.get_settings(conn)
     through = parse_date(through_date) if through_date else Date.today()
     start_date, configured_end_date, end_date, period_mode = _location_statistics_period(conn, settings, through)
+    baseline_period = _location_baseline_period(conn, settings, through)
     target_percent = min(100.0, max(0.0, _safe_float(settings.get("office_quota_target_percent"), 50.0)))
     mixed_day_mode, mixed_office_weight, mixed_home_weight = _location_mixed_day_weights(settings)
     selected = _location_statistics_snapshot(
@@ -396,7 +397,7 @@ def get_location_statistics(conn, through_date: str | None = None) -> dict[str, 
         mixed_day_mode,
         mixed_office_weight,
         mixed_home_weight,
-        include_baseline=period_mode == "all",
+        baseline_period=baseline_period,
         key="configured",
         label=f"Eingestellt: {_location_statistics_mode_label(period_mode)}",
         configured_end_date=configured_end_date,
@@ -411,7 +412,7 @@ def get_location_statistics(conn, through_date: str | None = None) -> dict[str, 
         mixed_day_mode,
         mixed_office_weight,
         mixed_home_weight,
-        include_baseline=True,
+        baseline_period=baseline_period,
         key="all",
         label="Alles seit Trackingstart",
         configured_end_date=through,
@@ -425,6 +426,7 @@ def get_location_statistics(conn, through_date: str | None = None) -> dict[str, 
         mixed_day_mode,
         mixed_office_weight,
         mixed_home_weight,
+        baseline_period,
         selected,
     )
     result = dict(selected)
@@ -458,7 +460,7 @@ def _location_statistics_snapshot(
     mixed_office_weight: float,
     mixed_home_weight: float,
     *,
-    include_baseline: bool,
+    baseline_period: tuple[Date, Date, Date, str],
     key: str,
     label: str,
     configured_end_date: Date,
@@ -469,8 +471,13 @@ def _location_statistics_snapshot(
     tracked_office = sum(1 for row in summaries if row["location"] == "OFFICE")
     tracked_home = sum(1 for row in summaries if row["location"] == "HOME")
     tracked_mixed = sum(1 for row in summaries if row["location"] == "MIXED")
-    manual_office = max(0.0, _safe_float(settings.get("office_baseline_days"), 0.0)) if include_baseline else 0.0
-    manual_home = max(0.0, _safe_float(settings.get("homeoffice_baseline_days"), 0.0)) if include_baseline else 0.0
+    manual_office_total = max(0.0, _safe_float(settings.get("office_baseline_days"), 0.0))
+    manual_home_total = max(0.0, _safe_float(settings.get("homeoffice_baseline_days"), 0.0))
+    has_manual_baseline = (manual_office_total + manual_home_total) > 0
+    include_manual_baseline = _location_manual_baseline_is_fully_contained(start_date, end_date, baseline_period)
+    manual_factor = 1.0 if include_manual_baseline else 0.0
+    manual_office = manual_office_total if include_manual_baseline else 0.0
+    manual_home = manual_home_total if include_manual_baseline else 0.0
     weighted_office = manual_office + tracked_office + (tracked_mixed * mixed_office_weight)
     weighted_home = manual_home + tracked_home + (tracked_mixed * mixed_home_weight)
     total_days = weighted_office + weighted_home
@@ -484,18 +491,24 @@ def _location_statistics_snapshot(
         "configured_end_date": configured_end_date.isoformat(),
         "target_percent": target_percent,
         "mixed_day_mode": mixed_day_mode,
+        "manual_baseline_mode": baseline_period[3],
+        "manual_baseline_start_date": baseline_period[0].isoformat(),
+        "manual_baseline_end_date": baseline_period[2].isoformat(),
+        "manual_baseline_factor": round(manual_factor, 4),
+        "manual_baseline_status": "included" if include_manual_baseline and has_manual_baseline else "excluded" if has_manual_baseline else "empty",
+        "manual_baseline_excluded_days": 0.0 if include_manual_baseline else round(manual_office_total + manual_home_total, 2),
         "tracked_office_days": tracked_office,
         "tracked_homeoffice_days": tracked_home,
         "tracked_mixed_days": tracked_mixed,
-        "manual_office_days": manual_office,
-        "manual_homeoffice_days": manual_home,
+        "manual_office_days": round(manual_office, 2),
+        "manual_homeoffice_days": round(manual_home, 2),
         "office_days": weighted_office,
         "homeoffice_days": weighted_home,
         "total_days": total_days,
         "office_percent": round(office_percent, 1),
         "homeoffice_percent": round(home_percent, 1),
         "office_requirement_met": total_days == 0 or office_percent >= target_percent,
-        "includes_manual_baseline": include_baseline,
+        "includes_manual_baseline": include_manual_baseline and has_manual_baseline,
     }
 
 
@@ -508,16 +521,17 @@ def _location_statistics_comparison_periods(
     mixed_day_mode: str,
     mixed_office_weight: float,
     mixed_home_weight: float,
+    baseline_period: tuple[Date, Date, Date, str],
     selected: Mapping[str, Any],
 ) -> list[dict[str, Any]]:
     raw_periods = (
-        ("last_30", "Letzte 30 Tage", through - timedelta(days=29), False),
-        ("last_183", "Letzte 6 Monate", through - timedelta(days=182), False),
-        ("last_365", "Letzte 12 Monate", through - timedelta(days=364), False),
-        ("all", "Alles seit Trackingstart", overall_start, True),
+        ("last_30", "Letzte 30 Tage", through - timedelta(days=29)),
+        ("last_183", "Letzte 6 Monate", through - timedelta(days=182)),
+        ("last_365", "Letzte 12 Monate", through - timedelta(days=364)),
+        ("all", "Alles seit Trackingstart", overall_start),
     )
     periods: list[dict[str, Any]] = []
-    for key, label, start_date, include_baseline in raw_periods:
+    for key, label, start_date in raw_periods:
         snapshot = _location_statistics_snapshot(
             conn,
             settings,
@@ -527,7 +541,7 @@ def _location_statistics_comparison_periods(
             mixed_day_mode,
             mixed_office_weight,
             mixed_home_weight,
-            include_baseline=include_baseline,
+            baseline_period=baseline_period,
             key=key,
             label=label,
             configured_end_date=through,
@@ -553,6 +567,42 @@ def _location_statistics_mode_label(mode: str) -> str:
         "custom": "Eigener Zeitraum",
         "all": "Alles seit Trackingstart",
     }.get(mode, "Alles seit Trackingstart")
+
+
+def _location_baseline_period(
+    conn,
+    settings: Mapping[str, str],
+    through_date: Date,
+) -> tuple[Date, Date, Date, str]:
+    mode = settings.get("office_baseline_period_mode", "all")
+    if mode == "current_year":
+        start = Date(through_date.year, 1, 1)
+        configured_end = Date(through_date.year, 12, 31)
+    elif mode == "rolling_365":
+        start = through_date - timedelta(days=364)
+        configured_end = through_date
+    elif mode == "custom":
+        start = _optional_date(settings.get("office_baseline_custom_start")) or get_effective_tracking_start_date(conn, settings)
+        configured_end = _optional_date(settings.get("office_baseline_custom_end")) or through_date
+        if configured_end < start:
+            configured_end = start
+    else:
+        mode = "all"
+        start = get_effective_tracking_start_date(conn, settings)
+        configured_end = through_date
+    end = min(configured_end, through_date)
+    return start, configured_end, end, mode
+
+
+def _location_manual_baseline_is_fully_contained(
+    period_start: Date,
+    period_end: Date,
+    baseline_period: tuple[Date, Date, Date, str],
+) -> bool:
+    baseline_start, _, baseline_end, _ = baseline_period
+    if period_start > period_end or baseline_start > baseline_end:
+        return False
+    return period_start <= baseline_start and baseline_end <= period_end
 
 
 def _location_statistics_period(
