@@ -17,8 +17,11 @@ const state = {
     minHours: "",
     maxHours: "",
   },
-  statsChart: null,
   dashboardData: null,
+  absences: [],
+  absencesSort: { key: "start_date", direction: 1 },
+  absenceEditIds: null,
+  absenceCreateOpen: false,
   calculatorDefaults: null,
   calculatorRows: [],
   calculatorStartBalanceHours: "",
@@ -31,11 +34,11 @@ const state = {
 const content = document.getElementById("content");
 const toast = document.getElementById("toast");
 const shell = document.querySelector(".shell");
+const VIEW_CLASSES = ["dashboard-view", "calendar-view", "entries-view", "statistics-view", "vacation-view", "calculator-view", "settings-view"];
 let commandPollTimer = null;
 let autoRefreshTimer = null;
 let autoRefreshInFlight = false;
 let refreshFocusHandlerAttached = false;
-let chartLibraryPromise = null;
 
 const SETTINGS_HELP = {
   export: {
@@ -136,6 +139,8 @@ function setView(view) {
 window.__worktimeSetView = setView;
 
 function syncNav() {
+  shell?.classList.remove(...VIEW_CLASSES);
+  shell?.classList.add(`${state.view}-view`);
   shell?.classList.toggle("utility-view", state.view === "settings");
   document.querySelectorAll(".nav button").forEach(button => {
     button.classList.toggle("active", button.dataset.view === state.view);
@@ -322,12 +327,18 @@ async function renderCalendar() {
         <h1>Kalender</h1>
         <p>${monthLabel}</p>
       </div>
-      <div class="row-actions">
-        <button class="secondary" id="prev-month">Zurück</button>
+      <div class="row-actions calendar-head-actions">
+        <div class="year-switch" aria-label="Jahr wechseln">
+          <button class="secondary compact-button" id="prev-year" type="button" aria-label="Vorheriges Jahr">‹</button>
+          <strong>${year}</strong>
+          <button class="secondary compact-button" id="next-year" type="button" aria-label="Nächstes Jahr">›</button>
+        </div>
         <button class="secondary" id="today-month">Heute</button>
-        <button class="secondary" id="next-month">Weiter</button>
       </div>
     </div>
+    <nav class="month-strip" aria-label="Monat auswählen">
+      ${renderCalendarMonthStrip(year, month)}
+    </nav>
     <section class="calendar-grid" aria-label="Monatskalender">
       <div class="weekday calendar-weekday">KW</div>
       ${["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"].map(day => `<div class="weekday">${day}</div>`).join("")}
@@ -335,9 +346,9 @@ async function renderCalendar() {
     </section>
     <section id="day-detail-shell" class="detail-shell"></section>
   `;
-  document.getElementById("prev-month").addEventListener("click", () => {
+  document.getElementById("prev-year").addEventListener("click", () => {
     state.calendarDetailDate = null;
-    state.calendarDate = new Date(year, month - 2, 1);
+    state.calendarDate = new Date(year - 1, month - 1, 1);
     renderCalendar();
   });
   document.getElementById("today-month").addEventListener("click", () => {
@@ -346,10 +357,17 @@ async function renderCalendar() {
     state.calendarDetailDate = null;
     renderCalendar();
   });
-  document.getElementById("next-month").addEventListener("click", () => {
+  document.getElementById("next-year").addEventListener("click", () => {
     state.calendarDetailDate = null;
-    state.calendarDate = new Date(year, month, 1);
+    state.calendarDate = new Date(year + 1, month - 1, 1);
     renderCalendar();
+  });
+  document.querySelectorAll(".month-pill").forEach(button => {
+    button.addEventListener("click", () => {
+      state.calendarDetailDate = null;
+      state.calendarDate = new Date(year, Number(button.dataset.month) - 1, 1);
+      renderCalendar();
+    });
   });
   document.querySelectorAll(".day-tile").forEach(button => {
     button.addEventListener("click", async () => {
@@ -422,14 +440,23 @@ function renderCalendarWeeks(days, year, month, leading) {
   return weeks.join("");
 }
 
+function renderCalendarMonthStrip(year, activeMonth) {
+  return Array.from({ length: 12 }, (_, index) => {
+    const month = index + 1;
+    const label = new Date(year, index, 1).toLocaleDateString("de-DE", { month: "short" });
+    return `<button class="month-pill ${month === activeMonth ? "active" : ""}" type="button" data-month="${month}" aria-current="${month === activeMonth ? "date" : "false"}">${escapeHtml(label)}</button>`;
+  }).join("");
+}
+
 function renderDayTile(day) {
   const summary = day.summary || {};
   const klass = `${dayClass(summary)} ${futureDayClass(day, summary)} ${balanceDayClass(day)}`.trim();
   const label = dayLabel(summary);
   const balance = !isFutureDate(day.date) && summary.balance_minutes ? signedMinutes(summary.balance_minutes) : "";
   const note = dayDisplayNote(day);
+  const isToday = day.date === isoToday();
   return `
-    <button class="day-tile ${klass} ${state.calendarDetailDate === day.date ? "active" : ""}" data-date="${day.date}" aria-expanded="${state.calendarDetailDate === day.date ? "true" : "false"}">
+    <button class="day-tile ${klass} ${isToday ? "today" : ""} ${state.calendarDetailDate === day.date ? "active" : ""}" data-date="${day.date}" aria-expanded="${state.calendarDetailDate === day.date ? "true" : "false"}">
       <strong><span class="day-number">${Number(day.date.slice(-2))}.</span><span class="day-label"> ${label}</span></strong>
       <small>${summary.actual_minutes ? fmtMinutes(summary.actual_minutes) : ""} ${balance}</small>
       <small>${escapeHtml(note)}</small>
@@ -1112,8 +1139,6 @@ async function loadStatistics() {
   const year = Number(yearInput.value);
   const data = await api("statistics", year);
   renderStatisticsBody(data);
-  await loadChartLibrary();
-  drawStatsChart(data.months);
 }
 
 function renderStatisticsBody(data) {
@@ -1130,10 +1155,7 @@ function renderStatisticsBody(data) {
       ${metric("Büro", `${data.office_days} Tage`, null, "office")}
       ${metric("Homeoffice", `${data.homeoffice_days} Tage`, null, "homeoffice")}
     </div>
-    <div class="panel stats-chart-panel">
-      <h2>Monatssalden</h2>
-      <canvas id="stats-chart" height="280" aria-label="Balkendiagramm der Monatssalden"></canvas>
-    </div>
+    ${statsTrendPanel(data.months)}
     <div class="table-wrap">
       <table>
         <thead><tr><th>Monat</th><th>Soll</th><th>Ist</th><th>Saldo</th><th>Kumuliert</th><th>Urlaub</th><th>Krank</th><th>Homeoffice</th></tr></thead>
@@ -1168,8 +1190,6 @@ async function refreshStatistics({ silent = true } = {}) {
   } else {
     updateStatisticsBody(data);
   }
-  await loadChartLibrary();
-  drawStatsChart(data.months);
 }
 
 function updateStatisticsBody(data) {
@@ -1182,6 +1202,7 @@ function updateStatisticsBody(data) {
   updateStatsMetric("office", `${data.office_days} Tage`);
   updateStatsMetric("homeoffice", `${data.homeoffice_days} Tage`);
   data.months.forEach(updateStatsMonthRow);
+  updateStatsTrendPanel(data.months);
 }
 
 function updateStatsMetric(key, value, signedValue = null) {
@@ -1223,67 +1244,136 @@ function setStatsCell(row, field, value) {
   if (cell) cell.textContent = value;
 }
 
-function loadChartLibrary() {
-  if (window.Chart) return Promise.resolve();
-  if (chartLibraryPromise) return chartLibraryPromise;
-  chartLibraryPromise = new Promise((resolve, reject) => {
-    const script = document.createElement("script");
-    script.src = "../static/vendor/chart.umd.js";
-    script.onload = resolve;
-    script.onerror = () => reject(new Error("Chart-Bibliothek konnte nicht geladen werden."));
-    document.head.appendChild(script);
-  });
-  return chartLibraryPromise;
+function updateStatsTrendPanel(months) {
+  const panel = document.querySelector("[data-stats-trend-panel]");
+  if (panel) panel.outerHTML = statsTrendPanel(months);
 }
 
-function drawStatsChart(months) {
-  const canvas = document.getElementById("stats-chart");
-  if (!canvas) return;
-  const labels = months.map(month => month.year_month.slice(5));
-  const values = months.map(month => month.balance_minutes);
-  if (state.statsChart && state.statsChart.canvas !== canvas) {
-    state.statsChart.destroy();
-    state.statsChart = null;
-  }
-  if (state.statsChart) {
-    state.statsChart.data.labels = labels;
-    state.statsChart.data.datasets[0].data = values;
-    state.statsChart.update("none");
-    return;
-  }
-  state.statsChart = new Chart(canvas, {
-    type: "bar",
-    data: {
-      labels,
-      datasets: [{ label: "Saldo in Minuten", data: values }],
-    },
-  });
+function statsTrendPanel(months) {
+  const rows = Array.isArray(months) ? months : [];
+  const peakBalance = Math.max(60, ...rows.map(month => Math.abs(Number(month.balance_minutes) || 0)));
+  return `
+    <section class="panel stats-trend-panel" data-stats-trend-panel>
+      <div class="stats-trend-head">
+        <div>
+          <h2>Monatsvergleich</h2>
+          <p>Soll und Ist je Monat, darunter der Saldo um die Null-Linie.</p>
+        </div>
+        <div class="stats-trend-legend" aria-label="Legende">
+          <span><i class="legend-target"></i>Soll</span>
+          <span><i class="legend-actual"></i>Ist</span>
+          <span><i class="legend-positive"></i>Plus</span>
+          <span><i class="legend-negative"></i>Minus</span>
+        </div>
+      </div>
+      ${statsTrendSummary(rows)}
+      <div class="stats-month-list" role="list">
+        ${rows.length ? rows.map(month => statsMonthComparisonRow(month, peakBalance)).join("") : `<div class="empty">Keine Monatswerte für dieses Jahr vorhanden.</div>`}
+      </div>
+    </section>
+  `;
+}
+
+function statsTrendSummary(months) {
+  if (!months.length) return "";
+  const totalBalance = months.reduce((sum, month) => sum + (Number(month.balance_minutes) || 0), 0);
+  const averageBalance = Math.round(totalBalance / months.length);
+  const best = months.reduce((bestMonth, month) => Number(month.balance_minutes || 0) > Number(bestMonth.balance_minutes || 0) ? month : bestMonth, months[0]);
+  const weakest = months.reduce((weakestMonth, month) => Number(month.balance_minutes || 0) < Number(weakestMonth.balance_minutes || 0) ? month : weakestMonth, months[0]);
+  return `
+    <div class="stats-trend-summary">
+      ${statsSummaryPill("Jahressaldo", signedMinutes(totalBalance), totalBalance)}
+      ${statsSummaryPill("Durchschnitt", signedMinutes(averageBalance), averageBalance)}
+      ${statsSummaryPill(`Bester Monat`, `${formatYearMonthShort(best.year_month)} · ${signedMinutes(best.balance_minutes)}`, best.balance_minutes)}
+      ${statsSummaryPill(`Schwächster Monat`, `${formatYearMonthShort(weakest.year_month)} · ${signedMinutes(weakest.balance_minutes)}`, weakest.balance_minutes)}
+    </div>
+  `;
+}
+
+function statsSummaryPill(label, value, signedValue = 0) {
+  const tone = Number(signedValue) > 0 ? "positive" : Number(signedValue) < 0 ? "negative" : "neutral";
+  return `<article class="stats-summary-pill ${tone}"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></article>`;
+}
+
+function statsMonthComparisonRow(month, peakBalance) {
+  const targetMinutes = Math.max(0, Number(month.target_minutes) || 0);
+  const actualMinutes = Math.max(0, Number(month.actual_minutes) || 0);
+  const balanceMinutes = Number(month.balance_minutes) || 0;
+  const rowMax = Math.max(60, targetMinutes, actualMinutes);
+  const targetWidth = targetMinutes ? Math.max(3, Math.min(100, (targetMinutes / rowMax) * 100)) : 0;
+  const actualWidth = actualMinutes ? Math.max(3, Math.min(100, (actualMinutes / rowMax) * 100)) : 0;
+  const balanceWidth = Math.min(50, (Math.abs(balanceMinutes) / Math.max(60, peakBalance)) * 50);
+  const negativeWidth = balanceMinutes < 0 ? balanceWidth : 0;
+  const positiveWidth = balanceMinutes > 0 ? balanceWidth : 0;
+  const tone = balanceMinutes > 0 ? "positive" : balanceMinutes < 0 ? "negative" : "neutral";
+  const label = formatYearMonthShort(month.year_month);
+  return `
+    <article
+      class="stats-month-comparison ${tone}"
+      data-stats-month-card="${escapeHtml(month.year_month)}"
+      role="listitem"
+      style="--target-width: ${targetWidth}%; --actual-width: ${actualWidth}%; --negative-width: ${negativeWidth}%; --positive-width: ${positiveWidth}%;"
+      aria-label="${escapeHtml(`${label}: Soll ${fmtMinutes(targetMinutes)}, Ist ${fmtMinutes(actualMinutes)}, Saldo ${signedMinutes(balanceMinutes)}`)}"
+    >
+      <div class="stats-month-label">
+        <strong>${escapeHtml(label.split(" ")[0])}</strong>
+        <small>${escapeHtml(label.split(" ")[1] || "")}</small>
+      </div>
+      <div class="stats-month-visual">
+        <div class="stats-bar-row">
+          <span>Soll</span>
+          <div class="stats-bar-track"><i class="stats-bar-fill target"></i></div>
+        </div>
+        <div class="stats-bar-row">
+          <span>Ist</span>
+          <div class="stats-bar-track"><i class="stats-bar-fill actual"></i></div>
+        </div>
+        <div class="stats-balance-axis" title="Saldo ${escapeHtml(signedMinutes(balanceMinutes))}">
+          <i class="stats-balance-fill negative"></i>
+          <i class="stats-balance-zero"></i>
+          <i class="stats-balance-fill positive"></i>
+        </div>
+      </div>
+      <div class="stats-month-values">
+        <span><small>Soll</small><strong>${fmtMinutes(targetMinutes)}</strong></span>
+        <span><small>Ist</small><strong>${fmtMinutes(actualMinutes)}</strong></span>
+        <span><small>Saldo</small><strong class="${tone === "negative" ? "negative" : tone === "positive" ? "positive" : ""}">${signedMinutes(balanceMinutes)}</strong></span>
+        <span><small>Konto</small><strong>${escapeHtml(month.carry_over_hours || "0")} h</strong></span>
+      </div>
+    </article>
+  `;
+}
+
+function formatYearMonthShort(yearMonth) {
+  const [rawYear, rawMonth] = String(yearMonth || "").split("-");
+  const year = Number(rawYear);
+  const month = Number(rawMonth);
+  if (!year || !month) return String(yearMonth || "");
+  const label = new Date(year, month - 1, 1).toLocaleDateString("de-DE", { month: "short" }).replace(".", "");
+  return `${label} ${year}`;
 }
 
 async function renderVacation() {
   const year = new Date().getFullYear();
+  state.absenceEditIds = null;
   content.innerHTML = `
     <div class="page-head">
       <div><h1>Urlaub und Abwesenheiten</h1><p>Urlaub, Gleitzeit, Krankheit, Dienstreisen und Feiertags-Ausnahmen eintragen.</p></div>
+      <button id="toggle-absence-create" type="button">${state.absenceCreateOpen ? "Eingabe schließen" : "+ Abwesenheit hinzufügen"}</button>
     </div>
-    <section class="panel">
-      <form id="absence-form" class="grid cols-2">
+    <section id="absence-create-panel" class="panel absence-create-panel ${state.absenceCreateOpen ? "" : "hidden"}">
+      <form id="absence-create-form" class="grid cols-2">
+        <div class="field-wide absence-form-heading">
+          <strong>Neue Abwesenheit</strong>
+        </div>
         <label>Von <input name="start_date" type="date" value="${isoToday()}" required></label>
         <label>Bis <input name="end_date" type="date" value="${isoToday()}" required></label>
-        <label>Typ
-          <select name="type">
-            <option value="URLAUB">Urlaub</option>
-            <option value="KRANK">Krank</option>
-            <option value="FEIERTAG">Feiertag (Ausnahme)</option>
-            <option value="GLEITZEITTAG">Gleitzeittag</option>
-            <option value="DIENSTREISE">Dienstreise</option>
-          </select>
-        </label>
-        <label>Umfang
-          <select name="half_day"><option value="0">Ganzer Tag</option><option value="1">Halber Tag</option></select>
-        </label>
+        ${absenceFormFields({ approval_status: "planned" })}
         <label class="field-wide">Notiz <input name="note" type="text"></label>
-        <button>Speichern</button>
+        <div class="form-actions field-wide">
+          <button id="absence-submit">Speichern</button>
+          <button id="cancel-absence-create" class="secondary" type="button">Abbrechen</button>
+        </div>
       </form>
     </section>
     <section class="panel stack section-gap">
@@ -1291,26 +1381,58 @@ async function renderVacation() {
         <div><h2>Geplante Abwesenheiten</h2><p>Zusammenhängende Einträge mit angerechneten Arbeitstagen.</p></div>
         <label>Jahr <input id="absence-year" type="number" value="${year}" min="2000" max="2100"></label>
       </div>
+      <section class="toolbar absence-filterbar" aria-label="Abwesenheiten filtern">
+        <label>Suche <input id="absence-search" type="search" placeholder="Datum, Typ, Notiz"></label>
+        <label>Typ
+          <select id="absence-filter-type">
+            <option value="all">Alle Typen</option>
+            <option value="URLAUB">Urlaub</option>
+            <option value="KRANK">Krank</option>
+            <option value="FEIERTAG">Feiertag</option>
+            <option value="GLEITZEITTAG">Gleitzeittag</option>
+            <option value="DIENSTREISE">Dienstreise</option>
+          </select>
+        </label>
+        <label>Status
+          <select id="absence-filter-status">
+            <option value="all">Alle Status</option>
+            <option value="planned">Geplant</option>
+            <option value="approved">Genehmigt</option>
+          </select>
+        </label>
+        <label>Quelle
+          <select id="absence-filter-source">
+            <option value="all">Alle Quellen</option>
+            <option value="MANUAL">Manuell</option>
+            <option value="AUTO_STANDARD">Automatisch</option>
+          </select>
+        </label>
+      </section>
+      <div id="absence-filter-summary" class="filter-summary" aria-live="polite"></div>
       <div id="absence-list" class="loading">Lade Abwesenheiten …</div>
     </section>
   `;
-  document.getElementById("absence-form").addEventListener("submit", async event => {
+  document.getElementById("toggle-absence-create").addEventListener("click", () => {
+    state.absenceCreateOpen = !state.absenceCreateOpen;
+    renderVacation();
+  });
+  document.getElementById("cancel-absence-create")?.addEventListener("click", () => {
+    state.absenceCreateOpen = false;
+    renderVacation();
+  });
+  document.getElementById("absence-create-form")?.addEventListener("submit", async event => {
     event.preventDefault();
     const form = event.currentTarget;
-    await api("add_day_type_range", {
-      start_date: form.start_date.value,
-      end_date: form.end_date.value,
-      type: form.type.value,
-      half_day: form.half_day.value === "1",
-      note: form.note.value,
-    });
+    await api("add_day_type_range", collectAbsenceFormPayload(form));
     notify("Abwesenheit gespeichert");
+    state.absenceCreateOpen = false;
     form.reset();
-    form.start_date.value = isoToday();
-    form.end_date.value = isoToday();
     await loadAbsences();
   });
   document.getElementById("absence-year").addEventListener("change", loadAbsences);
+  ["absence-search", "absence-filter-type", "absence-filter-status", "absence-filter-source"].forEach(id => {
+    document.getElementById(id)?.addEventListener("input", drawAbsences);
+  });
   await loadAbsences();
 }
 
@@ -1320,27 +1442,94 @@ async function loadAbsences() {
   if (!yearInput || !target) return;
   const year = Number(yearInput.value);
   const data = await api("absences", year);
-  if (!data.rows.length) {
+  state.absences = data.rows || [];
+  drawAbsences();
+}
+
+function drawAbsences() {
+  const target = document.getElementById("absence-list");
+  if (!target) return;
+  const rows = filteredAbsenceRows();
+  updateAbsenceFilterSummary(rows.length);
+  if (!state.absences.length) {
     target.className = "empty";
     target.textContent = "Noch keine Urlaube oder Abwesenheiten für dieses Jahr eingetragen.";
+    return;
+  }
+  if (!rows.length) {
+    target.className = "empty";
+    target.textContent = "Keine Abwesenheiten passen zu den aktuellen Filtern.";
     return;
   }
   target.className = "table-wrap";
   target.innerHTML = `
     <table>
-      <thead><tr><th>Zeitraum</th><th>Typ</th><th>Kalendertage</th><th>Angerechnet</th><th>Notiz</th><th>Aktionen</th></tr></thead>
-      <tbody>${data.rows.map(row => `
-        <tr>
-          <td data-label="Zeitraum">${escapeHtml(periodLabel(row.start_date, row.end_date))}</td>
+      <thead><tr>${[
+        ["start_date", "Zeitraum"],
+        ["type", "Typ"],
+        ["approval_status", "Status"],
+        ["days", "Kalendertage"],
+        ["counted_days", "Angerechnet"],
+        ["note", "Notiz"],
+      ].map(([key, label]) => `<th data-absence-sort="${key}">${label}</th>`).join("")}<th>Aktionen</th></tr></thead>
+      <tbody>${rows.map(row => {
+        const editing = sameNumberList(row.ids || [], state.absenceEditIds || []);
+        return `
+        <tr class="${editing ? "is-editing" : ""}">
+          <td data-label="Zeitraum">${escapeHtml(periodLabelWithWeekdays(row.start_date, row.end_date))}</td>
           <td data-label="Typ">${categoryLabel(row.type)}${row.half_day ? " (halb)" : ""}</td>
+          <td data-label="Status"><span class="status-pill ${row.approval_status === "planned" ? "planned" : "approved"}">${escapeHtml(absenceStatusLabel(row.approval_status))}</span></td>
           <td data-label="Kalendertage">${numberDe(row.days)}</td>
           <td data-label="Angerechnet">${escapeHtml(absenceCountLabel(row))}</td>
-          <td data-label="Notiz">${escapeHtml(row.note || "")}</td>
-          <td class="row-actions" data-label="Aktionen"><button class="secondary delete-absence" data-ids="${escapeHtml((row.ids || []).join(","))}">Entfernen</button></td>
+          <td data-label="Notiz">
+            <span>${escapeHtml(row.note || "—")}</span>
+            ${row.source === "AUTO_STANDARD" ? `<small class="muted">Automatisch</small>` : ""}
+          </td>
+          <td class="row-actions" data-label="Aktionen">
+            <button class="secondary edit-absence" data-ids="${escapeHtml((row.ids || []).join(","))}">${editing ? "Schließen" : "Bearbeiten"}</button>
+            <button class="secondary delete-absence" data-ids="${escapeHtml((row.ids || []).join(","))}">Entfernen</button>
+          </td>
         </tr>
-      `).join("")}</tbody>
+        ${editing ? renderAbsenceEditRow(row) : ""}
+      `;
+      }).join("")}</tbody>
     </table>
   `;
+  target.querySelectorAll("[data-absence-sort]").forEach(header => {
+    header.addEventListener("click", () => {
+      const key = header.dataset.absenceSort;
+      if (state.absencesSort.key === key) state.absencesSort.direction *= -1;
+      else state.absencesSort = { key, direction: 1 };
+      drawAbsences();
+    });
+  });
+  target.querySelectorAll(".edit-absence").forEach(button => {
+    button.addEventListener("click", () => {
+      const ids = button.dataset.ids.split(",").filter(Boolean).map(Number);
+      state.absenceEditIds = sameNumberList(state.absenceEditIds || [], ids) ? null : ids;
+      drawAbsences();
+    });
+  });
+  target.querySelectorAll(".absence-edit-form").forEach(form => {
+    form.addEventListener("submit", async event => {
+      event.preventDefault();
+      const ids = form.dataset.ids.split(",").filter(Boolean).map(Number);
+      const result = await api("update_day_type_range", { ...collectAbsenceFormPayload(form), ids });
+      if (result.ok === false) {
+        notify(result.error || "Abwesenheit konnte nicht aktualisiert werden", "error");
+        return;
+      }
+      notify("Abwesenheit aktualisiert");
+      state.absenceEditIds = null;
+      await loadAbsences();
+    });
+  });
+  target.querySelectorAll(".cancel-absence-inline-edit").forEach(button => {
+    button.addEventListener("click", () => {
+      state.absenceEditIds = null;
+      drawAbsences();
+    });
+  });
   target.querySelectorAll(".delete-absence").forEach(button => {
     button.addEventListener("click", async () => {
       if (!confirm("Abwesenheit wirklich entfernen?")) return;
@@ -1351,9 +1540,102 @@ async function loadAbsences() {
         return;
       }
       notify("Abwesenheit entfernt");
+      if (sameNumberList(state.absenceEditIds || [], ids)) state.absenceEditIds = null;
       await loadAbsences();
     });
   });
+}
+
+function renderAbsenceEditRow(row) {
+  return `
+    <tr class="absence-editor-row">
+      <td colspan="7">
+        <form class="absence-edit-form absence-inline-editor" data-ids="${escapeHtml((row.ids || []).join(","))}">
+          <label>Von <input name="start_date" type="date" value="${escapeHtml(row.start_date)}" required></label>
+          <label>Bis <input name="end_date" type="date" value="${escapeHtml(row.end_date)}" required></label>
+          ${absenceFormFields(row)}
+          <label>Notiz <input name="note" type="text" value="${escapeHtml(row.note || "")}"></label>
+          <div class="row-actions">
+            <button>Speichern</button>
+            <button class="secondary cancel-absence-inline-edit" type="button">Abbrechen</button>
+          </div>
+        </form>
+      </td>
+    </tr>
+  `;
+}
+
+function absenceFormFields(row = {}) {
+  return `
+    <label>Typ
+      <select name="type">
+        ${["URLAUB", "KRANK", "FEIERTAG", "GLEITZEITTAG", "DIENSTREISE"].map(value => `<option value="${value}" ${row.type === value ? "selected" : ""}>${categoryLabel(value)}${value === "FEIERTAG" ? " (Ausnahme)" : ""}</option>`).join("")}
+      </select>
+    </label>
+    <label>Umfang
+      <select name="half_day">
+        <option value="0" ${row.half_day ? "" : "selected"}>Ganzer Tag</option>
+        <option value="1" ${row.half_day ? "selected" : ""}>Halber Tag</option>
+      </select>
+    </label>
+    <label>Status
+      <select name="approval_status">
+        <option value="planned" ${(row.approval_status || "planned") === "planned" ? "selected" : ""}>Geplant</option>
+        <option value="approved" ${row.approval_status === "approved" ? "selected" : ""}>Genehmigt</option>
+      </select>
+    </label>
+  `;
+}
+
+function collectAbsenceFormPayload(form) {
+  return {
+    start_date: form.start_date.value,
+    end_date: form.end_date.value,
+    type: form.type.value,
+    half_day: form.half_day.value === "1",
+    approval_status: form.approval_status.value || "planned",
+    note: form.note?.value || "",
+  };
+}
+
+function filteredAbsenceRows() {
+  const query = (document.getElementById("absence-search")?.value || "").trim().toLowerCase();
+  const type = document.getElementById("absence-filter-type")?.value || "all";
+  const status = document.getElementById("absence-filter-status")?.value || "all";
+  const source = document.getElementById("absence-filter-source")?.value || "all";
+  const rows = state.absences.filter(row => {
+    if (type !== "all" && row.type !== type) return false;
+    if (status !== "all" && row.approval_status !== status) return false;
+    if (source !== "all" && row.source !== source) return false;
+    if (!query) return true;
+    const haystack = [
+      row.start_date,
+      row.end_date,
+      periodLabelWithWeekdays(row.start_date, row.end_date),
+      categoryLabel(row.type),
+      absenceStatusLabel(row.approval_status),
+      absenceSourceLabel(row.source),
+      row.note || "",
+    ].join(" ").toLowerCase();
+    return haystack.includes(query);
+  });
+  return sortAbsences(rows);
+}
+
+function sortAbsences(rows) {
+  const { key, direction } = state.absencesSort;
+  return [...rows].sort((left, right) => {
+    const leftValue = left[key] ?? "";
+    const rightValue = right[key] ?? "";
+    if (typeof leftValue === "number" && typeof rightValue === "number") return (leftValue - rightValue) * direction;
+    return String(leftValue).localeCompare(String(rightValue), "de-DE", { numeric: true }) * direction;
+  });
+}
+
+function updateAbsenceFilterSummary(visibleCount) {
+  const summary = document.getElementById("absence-filter-summary");
+  if (!summary) return;
+  summary.innerHTML = `<span>${visibleCount} von ${state.absences.length} Abwesenheiten sichtbar</span>`;
 }
 
 async function refreshVacation({ silent = true } = {}) {
@@ -2089,6 +2371,7 @@ function renderWorkSettings(settings) {
 }
 
 function renderVacationSettings(settings) {
+  const rules = standardAbsenceRulesForUi(settings);
   return `
     <label>Urlaubsanspruch/Jahr <input name="vacation_days_per_year" type="text" value="${escapeHtml(settings.vacation_days_per_year)}"></label>
     <label>Urlaubsübertrag Vorjahr <input name="vacation_carry_over" type="text" value="${escapeHtml(settings.vacation_carry_over)}"></label>
@@ -2096,7 +2379,177 @@ function renderVacationSettings(settings) {
       <input name="bundesland" type="text" value="${escapeHtml(settings.bundesland)}" placeholder="z. B. BW, BY, NRW">
       <small class="help-text">Wird für gesetzliche Feiertage in Kalender, Statistik und Arbeitszeitberechnung genutzt.</small>
     </label>
+    ${renderStandardAbsenceRulesEditor(rules)}
   `;
+}
+
+function renderStandardAbsenceRulesEditor(rules) {
+  return `
+    <div class="settings-field field-wide standard-rules-editor">
+      <div class="settings-field-head">
+        <strong>Standard-Abwesenheiten jedes Jahr</strong>
+        <button id="add-standard-rule" class="secondary compact-button" type="button">Regel hinzufügen</button>
+      </div>
+      <small class="help-text">Diese Regeln werden jedes Jahr automatisch als genehmigte Abwesenheiten eingetragen. Datumsformat: 24.12. oder 24.12.-31.12.; das Jahr wird ignoriert. Manuelle Einträge an demselben Datum haben Vorrang.</small>
+      <input id="standard-absence-rules-value" name="standard_absence_rules" type="hidden" value="${escapeHtml(JSON.stringify(rules))}">
+      <div class="standard-rules-table" aria-label="Standard-Abwesenheiten">
+        <div class="standard-rules-head" aria-hidden="true">
+          <span>Datum/Bereich</span><span>Art</span><span>Umfang</span><span>Notiz</span><span></span>
+        </div>
+        <div id="standard-rules-body" class="standard-rules-body">
+          ${rules.map(renderStandardRuleRow).join("")}
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function renderStandardRuleRow(rule = {}) {
+  return `
+    <div class="standard-rule-row">
+      <label><span class="standard-field-label">Datum/Bereich</span>
+        <input data-standard-rule-period type="text" inputmode="numeric" aria-label="Datum oder Bereich" value="${escapeHtml(formatStandardRulePeriodForUi(rule))}" placeholder="24.12. oder 24.12.-31.12.">
+      </label>
+      <label><span class="standard-field-label">Art</span>
+        <select data-standard-rule-type aria-label="Art">
+          ${standardAbsenceTypeOptions(rule.type)}
+        </select>
+      </label>
+      <label><span class="standard-field-label">Umfang</span>
+        <select data-standard-rule-half-day aria-label="Umfang">
+          <option value="0" ${rule.half_day ? "" : "selected"}>Ganzer Tag</option>
+          <option value="1" ${rule.half_day ? "selected" : ""}>Halber Tag</option>
+        </select>
+      </label>
+      <label><span class="standard-field-label">Notiz</span>
+        <input data-standard-rule-note type="text" aria-label="Notiz" value="${escapeHtml(rule.note || "")}" placeholder="z. B. Heiligabend">
+      </label>
+      <button class="ghost-icon-button remove-standard-rule" type="button" aria-label="Regel entfernen">×</button>
+    </div>
+  `;
+}
+
+function standardAbsenceTypeOptions(value) {
+  const selected = value || "URLAUB";
+  return [
+    ["URLAUB", "Urlaub"],
+    ["GLEITZEITTAG", "Gleitzeittag"],
+    ["FEIERTAG", "Frei ohne Urlaub"],
+    ["DIENSTREISE", "Dienstreise"],
+  ].map(([option, label]) => `<option value="${option}" ${selected === option ? "selected" : ""}>${label}</option>`).join("");
+}
+
+function standardAbsenceRulesForUi(settings) {
+  try {
+    const parsed = JSON.parse(settings.standard_absence_rules || "[]");
+    if (Array.isArray(parsed) && parsed.length) {
+      return parsed.map(rule => ({
+        date: rule.date || "",
+        end_date: rule.end_date || "",
+        type: rule.type || "URLAUB",
+        half_day: Boolean(rule.half_day),
+        note: rule.note || "",
+      }));
+    }
+  } catch (error) {
+    console.warn(error);
+  }
+  return legacyStandardAbsenceRules(settings);
+}
+
+function formatStandardRulePeriodForUi(rule = {}) {
+  const start = formatStandardRuleDateForUi(rule.date || "");
+  const end = formatStandardRuleDateForUi(rule.end_date || "");
+  if (start && end && start !== end) return `${start}-${end}`;
+  return start;
+}
+
+function formatStandardRuleDateForUi(value) {
+  const parts = parseStandardRuleDateParts(value);
+  if (!parts) return value || "";
+  return `${parts.day}.${parts.month}.`;
+}
+
+function parseStandardRuleDateParts(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return null;
+  const separator = raw.includes(".") ? "." : raw.includes("/") ? "/" : "-";
+  const pieces = raw.split(/[./-]/).filter(Boolean);
+  if (pieces.length !== 2 && pieces.length !== 3) return null;
+
+  let day = "";
+  let month = "";
+  if (pieces.length === 3 && pieces[0].length === 4) {
+    month = pieces[1];
+    day = pieces[2];
+  } else if (separator === "." || separator === "/") {
+    day = pieces[0];
+    month = pieces[1];
+  } else {
+    const first = Number(pieces[0]);
+    const second = Number(pieces[1]);
+    if (first > 12) {
+      day = pieces[0];
+      month = pieces[1];
+    } else if (second > 12) {
+      month = pieces[0];
+      day = pieces[1];
+    } else {
+      month = pieces[0];
+      day = pieces[1];
+    }
+  }
+
+  const monthNumber = Number(month);
+  const dayNumber = Number(day);
+  const candidate = new Date(2024, monthNumber - 1, dayNumber);
+  if (
+    !Number.isInteger(monthNumber)
+    || !Number.isInteger(dayNumber)
+    || candidate.getMonth() !== monthNumber - 1
+    || candidate.getDate() !== dayNumber
+  ) {
+    return null;
+  }
+  return { month: String(monthNumber).padStart(2, "0"), day: String(dayNumber).padStart(2, "0") };
+}
+
+function parseStandardRulePeriod(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return { date: "", end_date: "" };
+  const match = raw.match(/^\s*(\d{1,2}[./-]\d{1,2}\.?)\s*(?:[-–—]\s*(\d{1,2}[./-]\d{1,2}\.?))?\s*$/);
+  if (!match) return { date: raw, end_date: "" };
+  const start = formatStandardRuleDateForUi(match[1]);
+  const end = formatStandardRuleDateForUi(match[2] || "");
+  return { date: start, end_date: end && end !== start ? end : "" };
+}
+
+function legacyStandardAbsenceRules(settings) {
+  const rules = [];
+  const pushMode = (date, mode, note) => {
+    const mapped = legacyStandardAbsenceMode(mode);
+    if (!mapped) return;
+    rules.push({ date, type: mapped.type, half_day: mapped.half_day, note });
+  };
+  pushMode("12-24", settings.standard_absence_1224_mode, "Heiligabend");
+  pushMode("12-31", settings.standard_absence_1231_mode, "Silvester");
+  const bridge = legacyStandardAbsenceMode(settings.standard_absence_bridge_mode);
+  if (bridge) {
+    ["12-27", "12-28", "12-29", "12-30"].forEach(date => {
+      rules.push({ date, type: bridge.type, half_day: bridge.half_day, note: "Betriebsruhe Weihnachten/Neujahr" });
+    });
+  }
+  return rules;
+}
+
+function legacyStandardAbsenceMode(mode) {
+  return {
+    vacation_half: { type: "URLAUB", half_day: true },
+    vacation_full: { type: "URLAUB", half_day: false },
+    flextime_half: { type: "GLEITZEITTAG", half_day: true },
+    flextime_full: { type: "GLEITZEITTAG", half_day: false },
+    holiday: { type: "FEIERTAG", half_day: false },
+  }[mode] || null;
 }
 
 function renderBalanceStartSettings(settings) {
@@ -2305,6 +2758,28 @@ function renderPopupSettings(settings) {
       Uhrzeit für Tagesinfo
       <input name="daily_info_popup_time" type="time" value="${escapeHtml(settings.daily_info_popup_time || "16:30")}">
     </label>
+    <fieldset class="settings-field field-wide popup-reminder-settings">
+      <legend>Erinnerung an ungenehmigte Abwesenheiten</legend>
+      <small class="help-text">Zeigt geplante, aber noch nicht genehmigte Urlaube, Gleitzeittage oder Abwesenheiten, die bald anstehen.</small>
+      <div class="settings-inline-grid">
+        <label>Benachrichtigung
+          <select name="absence_reminder_mode">
+            <option value="off" ${settings.absence_reminder_mode === "off" ? "selected" : ""}>Aus</option>
+            <option value="startup" ${settings.absence_reminder_mode === "startup" ? "selected" : ""}>Beim Start des Trackers</option>
+            <option value="work_end" ${settings.absence_reminder_mode === "work_end" ? "selected" : ""}>Bei Arbeitsende</option>
+            <option value="custom" ${settings.absence_reminder_mode === "custom" ? "selected" : ""}>Zu fester Uhrzeit</option>
+          </select>
+        </label>
+        <label class="conditional-field" data-show-when="absence_reminder_mode:startup|work_end|custom">Tage vorher erinnern
+          <input name="absence_reminder_days" type="number" min="0" step="1" value="${escapeHtml(settings.absence_reminder_days || "14")}">
+          <small class="help-text">Beispiel: 14 bedeutet, dass ungenehmigte Einträge ab zwei Wochen vor dem Start angezeigt werden.</small>
+        </label>
+        <label class="conditional-field" data-show-when="absence_reminder_mode:custom">
+          Uhrzeit
+          <input name="absence_reminder_time" type="time" value="${escapeHtml(settings.absence_reminder_time || "09:00")}">
+        </label>
+      </div>
+    </fieldset>
   `;
 }
 
@@ -2641,6 +3116,7 @@ function bindSettingsForm(section) {
   const form = document.getElementById("settings-form");
   if (!form) return;
   bindConditionalFields(form);
+  bindStandardAbsenceRules(form);
   form.addEventListener("submit", async event => {
     event.preventDefault();
     const values = collectSettingsValues(form);
@@ -2701,9 +3177,10 @@ function bindConditionalFields(scope) {
     const [name, expected] = String(field.dataset.showWhen || "").split(":");
     const control = scope.elements?.[name];
     if (!name || !control) return;
+    const expectedValues = new Set(String(expected || "").split("|").filter(Boolean));
     const inputs = [...field.querySelectorAll("input, select, textarea, button")];
     const update = () => {
-      const visible = String(control.value) === expected;
+      const visible = expectedValues.has(String(control.value));
       field.hidden = !visible;
       inputs.forEach(input => {
         input.disabled = !visible;
@@ -2714,8 +3191,61 @@ function bindConditionalFields(scope) {
   });
 }
 
+function bindStandardAbsenceRules(form) {
+  const body = form.querySelector("#standard-rules-body");
+  const addButton = form.querySelector("#add-standard-rule");
+  if (!body || !addButton) return;
+  const sync = () => {
+    const hidden = form.querySelector("#standard-absence-rules-value");
+    if (hidden) hidden.value = JSON.stringify(readStandardAbsenceRules(form));
+  };
+  addButton.addEventListener("click", () => {
+    body.insertAdjacentHTML("beforeend", renderStandardRuleRow({ type: "URLAUB" }));
+    bindStandardRuleRow(body.lastElementChild, sync);
+    sync();
+  });
+  body.querySelectorAll(".standard-rule-row").forEach(row => bindStandardRuleRow(row, sync));
+  sync();
+}
+
+function bindStandardRuleRow(row, sync) {
+  if (!row) return;
+  const periodInput = row.querySelector("[data-standard-rule-period]");
+  row.querySelector(".remove-standard-rule")?.addEventListener("click", () => {
+    row.remove();
+    sync();
+  });
+  periodInput?.addEventListener("blur", () => {
+    const period = parseStandardRulePeriod(periodInput.value);
+    periodInput.value = period.end_date ? `${period.date}-${period.end_date}` : period.date;
+    sync();
+  });
+  row.querySelectorAll("input, select").forEach(input => {
+    input.addEventListener("input", sync);
+    input.addEventListener("change", sync);
+  });
+}
+
+function readStandardAbsenceRules(scope) {
+  return [...scope.querySelectorAll(".standard-rule-row")]
+    .map(row => {
+      const period = parseStandardRulePeriod(row.querySelector("[data-standard-rule-period]")?.value || "");
+      return {
+        date: period.date,
+        end_date: period.end_date,
+        type: row.querySelector("[data-standard-rule-type]")?.value || "URLAUB",
+        half_day: row.querySelector("[data-standard-rule-half-day]")?.value === "1",
+        note: row.querySelector("[data-standard-rule-note]")?.value.trim() || "",
+      };
+    })
+    .filter(rule => rule.date || rule.note);
+}
+
 function collectSettingsValues(form) {
   const values = Object.fromEntries(new FormData(form).entries());
+  if (form.querySelector("#standard-absence-rules-value")) {
+    values.standard_absence_rules = JSON.stringify(readStandardAbsenceRules(form));
+  }
   const weekdayInputs = [...form.querySelectorAll('input[name="workday_weekday"]')];
   if (weekdayInputs.length) {
     values.workday_weekdays = weekdayInputs.filter(input => input.checked).map(input => input.value).join(",");
@@ -3149,6 +3679,13 @@ function sameStringList(left, right) {
   return left.every((value, index) => value === right[index]);
 }
 
+function sameNumberList(left, right) {
+  if (left.length !== right.length) return false;
+  const sortedLeft = [...left].map(Number).sort((a, b) => a - b);
+  const sortedRight = [...right].map(Number).sort((a, b) => a - b);
+  return sortedLeft.every((value, index) => value === sortedRight[index]);
+}
+
 function normalizeSearchText(value) {
   return String(value || "")
     .toLowerCase()
@@ -3291,11 +3828,25 @@ function periodLabel(startDate, endDate) {
   return startDate === endDate ? startDate : `${startDate} bis ${endDate}`;
 }
 
+function periodLabelWithWeekdays(startDate, endDate) {
+  const start = `${weekdayShort(startDate)}, ${startDate}`;
+  if (startDate === endDate) return start;
+  return `${start} bis ${weekdayShort(endDate)}, ${endDate}`;
+}
+
 function absenceCountLabel(row) {
   const value = numberDe(row.counted_days);
   if (row.type === "URLAUB") return `${value} Urlaubstage`;
   if (row.type === "KRANK") return `${value} Arbeitstage`;
   return `${value} Tage`;
+}
+
+function absenceStatusLabel(value) {
+  return { planned: "Geplant", approved: "Genehmigt" }[value] || "Genehmigt";
+}
+
+function absenceSourceLabel(value) {
+  return { MANUAL: "Manuell", AUTO_STANDARD: "Automatisch" }[value] || "Manuell";
 }
 
 function isFutureDate(dateText) {

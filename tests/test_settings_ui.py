@@ -34,6 +34,59 @@ def test_settings_categories_are_split_and_sap_help_explains_source_tables():
     assert "*02634" not in script
 
 
+def test_vacation_and_popup_settings_use_conditional_editors():
+    script = APP_JS.read_text(encoding="utf-8")
+
+    assert "Standard-Abwesenheiten jedes Jahr" in script
+    assert "Regel hinzufügen" in script
+    assert "standard_absence_rules" in script
+    assert "standard-rules-body" in script
+    assert "Erinnerung an ungenehmigte Abwesenheiten" in script
+    assert 'data-show-when="absence_reminder_mode:startup|work_end|custom"' in script
+    assert 'data-show-when="absence_reminder_mode:custom"' in script
+    assert "Datumsformat: 24.12. oder 24.12.-31.12." in script
+    assert "standard-field-label" in script
+    assert "standard-hidden-date-picker" not in script
+    assert "showPicker" not in script
+
+
+def test_calendar_view_uses_compact_responsive_layout():
+    script = APP_JS.read_text(encoding="utf-8")
+    styles = APP_CSS.read_text(encoding="utf-8")
+
+    assert "calendar-view" in script
+    assert "VIEW_CLASSES" in script
+    assert ".shell.calendar-view .content" in styles
+    assert "clamp(58px, calc((100vh - 226px) / 6), 84px)" in styles
+    assert "repeat(12, minmax(48px, 1fr))" in styles
+
+
+def test_api_accepts_german_standard_absence_dates(tmp_path):
+    api = WorktimeApi(tmp_path / "database.db")
+
+    result = api.save_settings(
+        {
+            "standard_absence_rules": '[{"date":"24.12.","type":"URLAUB","half_day":true,"note":"Heiligabend"}]'
+        }
+    )
+
+    assert '"date":"12-24"' in result["settings"]["standard_absence_rules"]
+    assert '"end_date":""' in result["settings"]["standard_absence_rules"]
+
+
+def test_api_accepts_german_standard_absence_date_ranges(tmp_path):
+    api = WorktimeApi(tmp_path / "database.db")
+
+    result = api.save_settings(
+        {
+            "standard_absence_rules": '[{"date":"24.12.","end_date":"31.12.","type":"URLAUB","half_day":false,"note":"Betriebsruhe"}]'
+        }
+    )
+
+    assert '"date":"12-24"' in result["settings"]["standard_absence_rules"]
+    assert '"end_date":"12-31"' in result["settings"]["standard_absence_rules"]
+
+
 def test_settings_subnavigation_preserves_scroll_position_between_categories():
     script = APP_JS.read_text(encoding="utf-8")
 
@@ -101,6 +154,23 @@ def test_dashboard_other_details_use_insight_cards_and_trends():
     assert ".dashboard-insight-card:hover" in styles
     assert ".dashboard-period-card:hover" in styles
     assert ".dashboard-progress:hover" in styles
+
+
+def test_statistics_uses_readable_month_comparison_instead_of_canvas_chart():
+    script = APP_JS.read_text(encoding="utf-8")
+    styles = APP_CSS.read_text(encoding="utf-8")
+
+    assert "statsTrendPanel(data.months)" in script
+    assert "statsMonthComparisonRow" in script
+    assert "Monatsvergleich" in script
+    assert "Null-Linie" in script
+    assert "loadChartLibrary" not in script
+    assert "drawStatsChart" not in script
+    assert "stats-chart" not in script
+    assert ".stats-trend-panel" in styles
+    assert ".stats-month-comparison" in styles
+    assert ".stats-balance-axis" in styles
+    assert ".stats-month-comparison:hover" in styles
 
 
 def test_api_saves_popup_settings(tmp_path):

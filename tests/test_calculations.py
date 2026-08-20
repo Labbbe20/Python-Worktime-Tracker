@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import date as Date
 from datetime import datetime
 
@@ -148,6 +149,133 @@ def test_absence_api_deletes_grouped_range(tmp_path):
 
     assert result["ok"] is True
     assert not [item for item in api.absences(2026)["rows"] if item["type"] == "GLEITZEITTAG"]
+
+
+def test_absence_api_updates_grouped_range_with_status(tmp_path):
+    api = WorktimeApi(tmp_path / "database.db")
+    api.add_day_type_range(
+        {
+            "start_date": "2026-07-06",
+            "end_date": "2026-07-08",
+            "type": "URLAUB",
+            "half_day": False,
+            "approval_status": "planned",
+            "note": "Beantragt",
+        }
+    )
+    row = next(item for item in api.absences(2026)["rows"] if item["type"] == "URLAUB")
+
+    result = api.update_day_type_range(
+        {
+            "ids": row["ids"],
+            "start_date": "2026-07-07",
+            "end_date": "2026-07-09",
+            "type": "URLAUB",
+            "half_day": True,
+            "approval_status": "approved",
+            "note": "Genehmigt",
+        }
+    )
+    updated = next(item for item in api.absences(2026)["rows"] if item["type"] == "URLAUB")
+
+    assert result["ok"] is True
+    assert updated["start_date"] == "2026-07-07"
+    assert updated["end_date"] == "2026-07-09"
+    assert updated["half_day"] is True
+    assert updated["approval_status"] == "approved"
+    assert updated["note"] == "Genehmigt"
+    assert updated["source"] == "MANUAL"
+
+
+def test_standard_absence_rules_create_half_vacation_day(tmp_path):
+    conn = make_conn(tmp_path)
+    database.set_settings(
+        conn,
+        {
+            "standard_absence_1224_mode": "vacation_half",
+            "standard_absence_1231_mode": "off",
+            "standard_absence_bridge_mode": "off",
+        },
+    )
+
+    result = calculations.recalculate_day(conn, "2026-12-24")
+    rows = database.get_day_types_for_date(conn, "2026-12-24")
+
+    assert result.day_category == "VACATION"
+    assert rows[0]["type"] == "URLAUB"
+    assert rows[0]["half_day"] == 1
+    assert rows[0]["approval_status"] == "approved"
+    assert rows[0]["source"] == "AUTO_STANDARD"
+    assert calculations.get_day_type_days(conn, 2026, "URLAUB", "2026-12-24", "2026-12-24") == 0.5
+
+
+def test_configured_standard_absence_rules_create_yearly_days(tmp_path):
+    conn = make_conn(tmp_path)
+    database.set_settings(
+        conn,
+        {
+            "standard_absence_rules": json.dumps(
+                [
+                    {"date": "12-24", "type": "URLAUB", "half_day": True, "note": "Heiligabend"},
+                    {"date": "12-31", "type": "FEIERTAG", "half_day": False, "note": "Betriebsfrei"},
+                ]
+            )
+        },
+    )
+
+    christmas = calculations.recalculate_day(conn, "2026-12-24")
+    new_years_eve = calculations.recalculate_day(conn, "2026-12-31")
+    christmas_rows = database.get_day_types_for_date(conn, "2026-12-24")
+    new_years_eve_rows = database.get_day_types_for_date(conn, "2026-12-31")
+
+    assert christmas.day_category == "VACATION"
+    assert christmas_rows[0]["type"] == "URLAUB"
+    assert christmas_rows[0]["half_day"] == 1
+    assert christmas_rows[0]["approval_status"] == "approved"
+    assert christmas_rows[0]["source"] == "AUTO_STANDARD"
+    assert new_years_eve.day_category == "HOLIDAY"
+    assert new_years_eve_rows[0]["type"] == "FEIERTAG"
+    assert new_years_eve_rows[0]["half_day"] == 0
+    assert new_years_eve_rows[0]["source"] == "AUTO_STANDARD"
+
+
+def test_configured_standard_absence_rules_create_yearly_ranges(tmp_path):
+    conn = make_conn(tmp_path)
+    database.set_settings(
+        conn,
+        {
+            "standard_absence_rules": json.dumps(
+                [
+                    {
+                        "date": "12-24",
+                        "end_date": "12-31",
+                        "type": "URLAUB",
+                        "half_day": False,
+                        "note": "Betriebsruhe",
+                    }
+                ]
+            )
+        },
+    )
+
+    for date_text in ("2026-12-24", "2026-12-28", "2026-12-31"):
+        calculations.recalculate_day(conn, date_text)
+
+    rows = database.get_day_types_between(conn, "2026-12-24", "2026-12-31")
+
+    assert len(rows) == 8
+    assert {row["date"] for row in rows} == {
+        "2026-12-24",
+        "2026-12-25",
+        "2026-12-26",
+        "2026-12-27",
+        "2026-12-28",
+        "2026-12-29",
+        "2026-12-30",
+        "2026-12-31",
+    }
+    assert all(row["type"] == "URLAUB" for row in rows)
+    assert all(row["source"] == "AUTO_STANDARD" for row in rows)
 
 
 def test_day_note_is_visible_in_calendar_and_entries(tmp_path):

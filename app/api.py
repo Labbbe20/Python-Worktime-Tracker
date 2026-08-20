@@ -189,6 +189,8 @@ class WorktimeApi:
                 payload["type"],
                 bool(payload.get("half_day")),
                 payload.get("note") or None,
+                payload.get("approval_status") or "approved",
+                "MANUAL",
             )
             calculations.recalculate_day(conn, date)
             return self.day_detail(date)
@@ -222,6 +224,44 @@ class WorktimeApi:
             for date in dates:
                 calculations.recalculate_day(conn, date)
             return {"ok": True, "deleted": len(rows)}
+
+    def update_day_type_range(self, payload: dict[str, Any]) -> dict[str, Any]:
+        raw_ids = payload.get("ids", [])
+        ids = [int(value) for value in raw_ids if str(value).strip()]
+        if not ids:
+            return {"ok": False, "error": "Keine Abwesenheit ausgewählt"}
+        start = parse_date(payload["start_date"])
+        end = parse_date(payload["end_date"])
+        if end < start:
+            raise ValueError("Enddatum darf nicht vor dem Startdatum liegen.")
+        placeholders = ",".join("?" for _ in ids)
+        with self._locked_conn() as conn:
+            rows = conn.execute(
+                f"SELECT id, date FROM day_types WHERE id IN ({placeholders})",
+                ids,
+            ).fetchall()
+            if not rows:
+                return {"ok": False, "error": "Abwesenheit nicht gefunden"}
+            affected_dates = {row["date"] for row in rows}
+            for row in rows:
+                database.delete_day_type(conn, int(row["id"]))
+            current = start
+            while current <= end:
+                date_text = current.isoformat()
+                database.upsert_day_type(
+                    conn,
+                    date_text,
+                    payload["type"],
+                    bool(payload.get("half_day")),
+                    payload.get("note") or None,
+                    payload.get("approval_status") or "planned",
+                    "MANUAL",
+                )
+                affected_dates.add(date_text)
+                current = Date.fromordinal(current.toordinal() + 1)
+            for date_text in sorted(affected_dates):
+                calculations.recalculate_day(conn, date_text)
+            return {"ok": True, "updated": len(ids)}
 
     def save_note(self, date: str, text: str) -> dict[str, Any]:
         with self._locked_conn() as conn:
@@ -322,6 +362,10 @@ class WorktimeApi:
                     float(str(normalized.get("vacation_days_per_year", database.get_setting(conn, "vacation_days_per_year") or 0)).replace(",", ".")),
                     float(str(normalized.get("vacation_carry_over", database.get_setting(conn, "vacation_carry_over") or 0)).replace(",", ".")),
                 )
+            settings = database.get_settings(conn)
+            if any(key.startswith("standard_absence_") for key in normalized):
+                for standard_year in range(year - 1, year + 3):
+                    database.apply_standard_day_types(conn, settings, standard_year)
             start, end = _known_recalculation_range(conn, database.get_settings(conn))
             calculations.recalculate_range(conn, start, end)
             result = {"ok": True, "settings": _settings_for_ui(database.get_settings(conn))}
@@ -360,6 +404,8 @@ class WorktimeApi:
                     payload["type"],
                     bool(payload.get("half_day")),
                     payload.get("note") or None,
+                    payload.get("approval_status") or "planned",
+                    "MANUAL",
                 )
                 calculations.recalculate_day(conn, date_text)
                 current = Date.fromordinal(current.toordinal() + 1)
@@ -768,6 +814,7 @@ def _settings_for_ui(settings: dict[str, str]) -> dict[str, str]:
     result["office_end_buffer_minutes"] = _setting_int_for_ui(result.get("office_end_buffer_minutes", "0"))
     result["home_end_buffer_minutes"] = _setting_int_for_ui(result.get("home_end_buffer_minutes", "0"))
     result["auto_refresh_interval_seconds"] = _setting_int_for_ui(result.get("auto_refresh_interval_seconds", "60"))
+    result["absence_reminder_days"] = _setting_int_for_ui(result.get("absence_reminder_days", "14"))
     return result
 
 
@@ -783,6 +830,15 @@ def _normalize_settings_input(values: dict[str, Any]) -> dict[str, str]:
         if break_minutes < 0:
             raise ValueError("Pausenzeit darf nicht negativ sein.")
         normalized["daily_break_minutes"] = str(break_minutes)
+    if "absence_reminder_days" in normalized:
+        normalized["absence_reminder_days"] = _normalize_nonnegative_int(
+            normalized["absence_reminder_days"],
+            "Abwesenheits-Erinnerung",
+        )
+    if "standard_absence_rules" in normalized:
+        normalized["standard_absence_rules"] = _normalize_standard_absence_rules(
+            normalized["standard_absence_rules"]
+        )
     if "workday_weekdays" in normalized:
         weekdays = _normalize_workday_weekdays(normalized["workday_weekdays"])
         normalized["workday_weekdays"] = ",".join(str(day) for day in weekdays)
@@ -842,16 +898,21 @@ def _normalize_settings_input(values: dict[str, Any]) -> dict[str, str]:
         ("work_end_popup_mode", {"off", "open_only", "always"}),
         ("work_popup_timing", {"startup", "work_end", "custom"}),
         ("daily_info_popup_mode", {"off", "work_end", "custom"}),
+        ("absence_reminder_mode", {"off", "startup", "work_end", "custom"}),
         ("dashboard_absence_countdown_mode", {"workdays", "calendar_days"}),
         ("office_baseline_period_mode", {"all", "current_year", "rolling_365", "custom"}),
         ("office_quota_period_mode", {"all", "current_year", "rolling_365", "custom"}),
         ("office_quota_mixed_day_mode", {"split", "office", "homeoffice"}),
+        ("standard_absence_1224_mode", {"off", "vacation_half", "vacation_full", "flextime_half", "flextime_full", "holiday"}),
+        ("standard_absence_1231_mode", {"off", "vacation_half", "vacation_full", "flextime_half", "flextime_full", "holiday"}),
+        ("standard_absence_bridge_mode", {"off", "vacation_half", "vacation_full", "flextime_half", "flextime_full", "holiday"}),
     ):
         if key in normalized:
             normalized[key] = _normalize_choice_setting(normalized[key], allowed, key)
     for key, label in (
         ("work_popup_custom_time", "Popup-Uhrzeit"),
         ("daily_info_popup_time", "Info-Popup-Uhrzeit"),
+        ("absence_reminder_time", "Abwesenheits-Erinnerung"),
     ):
         if key in normalized and normalized[key]:
             normalized[key] = normalize_time_input(normalized[key])[:5]
@@ -873,6 +934,75 @@ def _normalize_choice_setting(value: str, allowed: set[str], label: str) -> str:
     if cleaned not in allowed:
         raise ValueError(f"Ungültige Einstellung für {label}.")
     return cleaned
+
+
+def _normalize_standard_absence_rules(raw_value: str) -> str:
+    if not raw_value:
+        return "[]"
+    try:
+        data = json.loads(raw_value)
+    except json.JSONDecodeError as exc:
+        raise ValueError("Standard-Abwesenheiten konnten nicht gelesen werden.") from exc
+    if not isinstance(data, list):
+        raise ValueError("Standard-Abwesenheiten müssen eine Liste sein.")
+    normalized: list[dict[str, Any]] = []
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        date_value = str(item.get("date") or "").strip()
+        day_type = str(item.get("type") or "").strip().upper()
+        if not date_value and not day_type and not str(item.get("note") or "").strip():
+            continue
+        date_value = _normalize_standard_rule_date(date_value)
+        end_date_value = str(item.get("end_date") or "").strip()
+        end_date_value = _normalize_standard_rule_date(end_date_value) if end_date_value else ""
+        if end_date_value and _month_day_sort_key(end_date_value) < _month_day_sort_key(date_value):
+            raise ValueError("Enddatum einer Standard-Abwesenheit darf nicht vor dem Startdatum liegen.")
+        if day_type not in {"URLAUB", "GLEITZEITTAG", "FEIERTAG", "DIENSTREISE"}:
+            raise ValueError("Typ einer Standard-Abwesenheit ist ungültig.")
+        normalized.append(
+            {
+                "date": date_value,
+                "end_date": end_date_value,
+                "type": day_type,
+                "half_day": bool(item.get("half_day")),
+                "note": str(item.get("note") or "").strip(),
+            }
+        )
+    return json.dumps(normalized, ensure_ascii=False, separators=(",", ":"))
+
+
+def _normalize_standard_rule_date(raw_value: str) -> str:
+    original = str(raw_value or "").strip()
+    text = original.replace(".", "-").replace("/", "-")
+    parts = [part.zfill(2) for part in text.split("-") if part.strip()]
+    if len(parts) == 3 and len(parts[0]) == 4:
+        month, day = parts[1], parts[2]
+    elif len(parts) == 3:
+        day, month = parts[0], parts[1]
+    elif len(parts) == 2:
+        try:
+            first, second = int(parts[0]), int(parts[1])
+        except ValueError as exc:
+            raise ValueError("Datum einer Standard-Abwesenheit muss als TT.MM. angegeben sein.") from exc
+        if "." in original or "/" in original or first > 12:
+            day, month = parts[0], parts[1]
+        elif second > 12:
+            month, day = parts[0], parts[1]
+        else:
+            month, day = parts[0], parts[1]
+    else:
+        raise ValueError("Datum einer Standard-Abwesenheit muss als TT.MM. angegeben sein.")
+    try:
+        Date(2024, int(month), int(day))
+    except ValueError as exc:
+        raise ValueError("Datum einer Standard-Abwesenheit ist ungültig.") from exc
+    return f"{month}-{day}"
+
+
+def _month_day_sort_key(value: str) -> tuple[int, int]:
+    month, day = value.split("-")
+    return int(month), int(day)
 
 
 def _normalize_auto_refresh_interval(raw_value: str) -> str:
@@ -1023,7 +1153,7 @@ def _day_type_ranges(conn, start_date: str, end_date: str) -> list[dict[str, Any
             """
             SELECT * FROM day_types
             WHERE date BETWEEN ? AND ?
-            ORDER BY type, date, half_day, COALESCE(note, '')
+            ORDER BY type, approval_status, source, date, half_day, COALESCE(note, '')
             """,
             (start_date, end_date),
         ).fetchall()
@@ -1047,6 +1177,8 @@ def _day_type_ranges(conn, start_date: str, end_date: str) -> list[dict[str, Any
                 "end_date": row["date"],
                 "half_day": bool(row["half_day"]),
                 "note": row["note"] or "",
+                "approval_status": row["approval_status"],
+                "source": row["source"],
                 "ids": [row["id"]],
             }
         last_date = row_date
@@ -1070,15 +1202,17 @@ def _expand_day_type_range(conn, row: dict[str, Any]) -> dict[str, Any]:
         "end_date": end.isoformat(),
         "half_day": bool(row["half_day"]),
         "note": row["note"] or "",
+        "approval_status": row["approval_status"],
+        "source": row["source"],
         "ids": [row["id"]],
     }
     return _finalize_day_type_range(conn, group)
 
 
-def _matching_day_type_exists(conn, date_value: Date, key: tuple[str, bool, str]) -> bool:
+def _matching_day_type_exists(conn, date_value: Date, key: tuple[str, bool, str, str, str]) -> bool:
     row = conn.execute(
         """
-        SELECT type, half_day, note FROM day_types
+        SELECT type, half_day, note, approval_status, source FROM day_types
         WHERE date = ? AND type = ?
         LIMIT 1
         """,
@@ -1087,8 +1221,14 @@ def _matching_day_type_exists(conn, date_value: Date, key: tuple[str, bool, str]
     return bool(row and _day_type_key(row) == key)
 
 
-def _day_type_key(row) -> tuple[str, bool, str]:
-    return row["type"], bool(row["half_day"]), row["note"] or ""
+def _day_type_key(row) -> tuple[str, bool, str, str, str]:
+    return (
+        row["type"],
+        bool(row["half_day"]),
+        row["note"] or "",
+        row["approval_status"],
+        row["source"],
+    )
 
 
 def _finalize_day_type_range(conn, group: dict[str, Any]) -> dict[str, Any]:

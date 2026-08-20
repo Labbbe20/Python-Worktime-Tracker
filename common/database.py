@@ -7,16 +7,27 @@ programs can be open at the same time.
 
 from __future__ import annotations
 
+import json
 import shutil
 import sqlite3
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import date as Date
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterator
 
 from .config import BACKUP_DIR, DEFAULT_SETTINGS, ensure_data_dirs, get_database_path
 from .models import DAY_TYPES, LOCATIONS, SEGMENT_TYPES, SOURCES, now_iso
 
+APPROVAL_STATUSES = {"planned", "approved"}
+DAY_TYPE_SOURCES = {"MANUAL", "AUTO_STANDARD"}
+STANDARD_ABSENCE_MODES = {
+    "vacation_half": ("URLAUB", True),
+    "vacation_full": ("URLAUB", False),
+    "flextime_half": ("GLEITZEITTAG", True),
+    "flextime_full": ("GLEITZEITTAG", False),
+    "holiday": ("FEIERTAG", False),
+}
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS segments (
@@ -39,6 +50,8 @@ CREATE TABLE IF NOT EXISTS day_types (
                  ('URLAUB','KRANK','FEIERTAG','GLEITZEITTAG','DIENSTREISE')),
     half_day    INTEGER NOT NULL DEFAULT 0,
     note        TEXT,
+    approval_status TEXT NOT NULL DEFAULT 'approved' CHECK (approval_status IN ('planned','approved')),
+    source      TEXT NOT NULL DEFAULT 'MANUAL' CHECK (source IN ('MANUAL','AUTO_STANDARD')),
     created_at  TEXT    NOT NULL,
     updated_at  TEXT    NOT NULL,
     UNIQUE (date, type)
@@ -116,12 +129,14 @@ def init_db(db_path: str | Path | None = None) -> Path:
     path = Path(db_path) if db_path else get_database_path()
     with connect(path) as conn:
         conn.executescript(SCHEMA_SQL)
+        _migrate_schema(conn)
         for key, value in DEFAULT_SETTINGS.items():
             conn.execute(
                 "INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)",
                 (key, value),
             )
         ensure_vacation_account(conn, datetime.now().year)
+        apply_standard_day_types(conn, get_settings(conn), datetime.now().year)
     return path
 
 
@@ -287,19 +302,25 @@ def upsert_day_type(
     day_type: str,
     half_day: bool = False,
     note: str | None = None,
+    approval_status: str = "approved",
+    source: str = "MANUAL",
 ) -> int:
     validate_choice(day_type, DAY_TYPES, "day_type")
+    validate_choice(approval_status, APPROVAL_STATUSES, "approval_status")
+    validate_choice(source, DAY_TYPE_SOURCES, "day_type_source")
     stamp = now_iso()
     conn.execute(
         """
-        INSERT INTO day_types (date, type, half_day, note, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?)
+        INSERT INTO day_types (date, type, half_day, note, approval_status, source, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(date, type) DO UPDATE SET
             half_day = excluded.half_day,
             note = excluded.note,
+            approval_status = excluded.approval_status,
+            source = excluded.source,
             updated_at = excluded.updated_at
         """,
-        (date, day_type, int(bool(half_day)), note, stamp, stamp),
+        (date, day_type, int(bool(half_day)), note, approval_status, source, stamp, stamp),
     )
     row = conn.execute("SELECT id FROM day_types WHERE date = ? AND type = ?", (date, day_type)).fetchone()
     return int(row["id"])
@@ -307,6 +328,65 @@ def upsert_day_type(
 
 def delete_day_type(conn: sqlite3.Connection, day_type_id: int) -> None:
     conn.execute("DELETE FROM day_types WHERE id = ?", (day_type_id,))
+
+
+def apply_standard_day_types(conn: sqlite3.Connection, settings: dict[str, str], year: int) -> None:
+    """Materialize configured company-wide absence rules for one year."""
+
+    year = int(year)
+    stamp = now_iso()
+    desired = {
+        (date_text, day_type): (int(bool(half_day)), note)
+        for date_text, day_type, half_day, note in _standard_day_type_rows(settings, year)
+    }
+    manual_dates = {
+        row["date"]
+        for row in conn.execute(
+            """
+            SELECT DISTINCT date FROM day_types
+            WHERE source = 'MANUAL' AND date BETWEEN ? AND ?
+            """,
+            (f"{year:04d}-01-01", f"{year:04d}-12-31"),
+        ).fetchall()
+    }
+    existing = conn.execute(
+        """
+        SELECT id, date, type, half_day, note FROM day_types
+        WHERE source = 'AUTO_STANDARD' AND date BETWEEN ? AND ?
+        """,
+        (f"{year:04d}-01-01", f"{year:04d}-12-31"),
+    ).fetchall()
+    for row in existing:
+        key = (row["date"], row["type"])
+        if row["date"] in manual_dates:
+            conn.execute("DELETE FROM day_types WHERE id = ?", (row["id"],))
+            continue
+        desired_value = desired.get(key)
+        if desired_value is None:
+            conn.execute("DELETE FROM day_types WHERE id = ?", (row["id"],))
+            continue
+        half_day, note = desired_value
+        if int(row["half_day"]) != half_day or (row["note"] or "") != note:
+            conn.execute(
+                """
+                UPDATE day_types
+                SET half_day = ?, note = ?, approval_status = 'approved', updated_at = ?
+                WHERE id = ?
+                """,
+                (half_day, note, stamp, row["id"]),
+            )
+    for (date_text, day_type), (half_day, note) in desired.items():
+        if date_text in manual_dates:
+            continue
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO day_types (
+                date, type, half_day, note, approval_status, source, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, 'approved', 'AUTO_STANDARD', ?, ?)
+            """,
+            (date_text, day_type, half_day, note, stamp, stamp),
+        )
 
 
 def get_day_types_for_date(conn: sqlite3.Connection, date: str) -> list[sqlite3.Row]:
@@ -320,6 +400,138 @@ def get_day_types_between(conn: sqlite3.Connection, start_date: str, end_date: s
             (start_date, end_date),
         ).fetchall()
     )
+
+
+def _standard_day_type_rows(settings: dict[str, str], year: int) -> list[tuple[str, str, bool, str]]:
+    configured_rules = _configured_standard_absence_rules(settings, year)
+    if configured_rules:
+        return configured_rules
+
+    rows: list[tuple[str, str, bool, str]] = []
+    rows.extend(_single_standard_day_type(settings.get("standard_absence_1224_mode"), year, 12, 24, "Heiligabend"))
+    rows.extend(_single_standard_day_type(settings.get("standard_absence_1231_mode"), year, 12, 31, "Silvester"))
+    bridge_mode = settings.get("standard_absence_bridge_mode", "off")
+    workdays = _configured_workday_indices(settings)
+    current = Date(year, 12, 27)
+    while current <= Date(year, 12, 30):
+        if current.weekday() in workdays:
+            rows.extend(
+                _single_standard_day_type(
+                    bridge_mode,
+                    year,
+                    current.month,
+                    current.day,
+                    "Betriebsruhe Weihnachten/Neujahr",
+                )
+            )
+        current += timedelta(days=1)
+    return rows
+
+
+def _configured_standard_absence_rules(settings: dict[str, str], year: int) -> list[tuple[str, str, bool, str]]:
+    raw = str(settings.get("standard_absence_rules", "") or "").strip()
+    if not raw:
+        return []
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(data, list):
+        return []
+
+    rows: list[tuple[str, str, bool, str]] = []
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        month_day = _normalize_standard_month_day(item.get("date") or item.get("month_day"))
+        end_month_day = _normalize_standard_month_day(item.get("end_date") or item.get("end_month_day"))
+        day_type = str(item.get("type") or "").strip().upper()
+        if not month_day or day_type not in DAY_TYPES:
+            continue
+        half_day = bool(item.get("half_day"))
+        note = str(item.get("note") or "").strip() or "Standard-Abwesenheit"
+        for date_value in _standard_rule_dates_for_year(month_day, end_month_day, year):
+            rows.append((date_value, day_type, half_day, f"{note} (automatisch)"))
+    return rows
+
+
+def _standard_rule_dates_for_year(start_month_day: str, end_month_day: str | None, year: int) -> list[str]:
+    start_date = _month_day_to_date(start_month_day, year)
+    end_date = _month_day_to_date(end_month_day or start_month_day, year)
+    if not start_date or not end_date or end_date < start_date:
+        return []
+    current = start_date
+    dates: list[str] = []
+    while current <= end_date:
+        dates.append(current.isoformat())
+        current += timedelta(days=1)
+    return dates
+
+
+def _month_day_to_date(month_day: str, year: int) -> Date | None:
+    month_text, day_text = month_day.split("-")
+    try:
+        return Date(year, int(month_text), int(day_text))
+    except ValueError:
+        return None
+
+
+def _normalize_standard_month_day(value: Any) -> str | None:
+    original = str(value or "").strip()
+    text = original
+    if not text:
+        return None
+    text = text.replace(".", "-").replace("/", "-")
+    parts = [part.zfill(2) for part in text.split("-") if part]
+    try:
+        if len(parts) == 3 and len(parts[0]) == 4:
+            month, day = parts[1], parts[2]
+        elif len(parts) == 3:
+            day, month = parts[0], parts[1]
+        elif len(parts) == 2:
+            first, second = int(parts[0]), int(parts[1])
+            if "." in original or "/" in original or first > 12:
+                day, month = parts[0], parts[1]
+            elif second > 12:
+                month, day = parts[0], parts[1]
+            else:
+                month, day = parts[0], parts[1]
+        else:
+            return None
+    except ValueError:
+        return None
+    try:
+        Date(2024, int(month), int(day))
+    except ValueError:
+        return None
+    return f"{month}-{day}"
+
+
+def _single_standard_day_type(
+    mode: str | None,
+    year: int,
+    month: int,
+    day: int,
+    label: str,
+) -> list[tuple[str, str, bool, str]]:
+    config = STANDARD_ABSENCE_MODES.get(str(mode or "off"))
+    if not config:
+        return []
+    day_type, half_day = config
+    return [(f"{year:04d}-{month:02d}-{day:02d}", day_type, half_day, f"{label} (automatisch)")]
+
+
+def _configured_workday_indices(settings: dict[str, str]) -> set[int]:
+    raw = str(settings.get("workday_weekdays", "") or "").strip()
+    if raw:
+        values = {int(item) for item in raw.split(",") if item.strip().isdigit() and 0 <= int(item) <= 6}
+        if values:
+            return values
+    try:
+        count = int(settings.get("workdays_per_week", DEFAULT_SETTINGS["workdays_per_week"]) or 5)
+    except ValueError:
+        count = 5
+    return set(range(max(1, min(7, count))))
 
 
 def replace_note(conn: sqlite3.Connection, date: str, text: str) -> None:
@@ -523,3 +735,13 @@ def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
         (name,),
     ).fetchone()
     return row is not None
+
+
+def _migrate_schema(conn: sqlite3.Connection) -> None:
+    if not _table_exists(conn, "day_types"):
+        return
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(day_types)").fetchall()}
+    if "approval_status" not in columns:
+        conn.execute("ALTER TABLE day_types ADD COLUMN approval_status TEXT NOT NULL DEFAULT 'approved'")
+    if "source" not in columns:
+        conn.execute("ALTER TABLE day_types ADD COLUMN source TEXT NOT NULL DEFAULT 'MANUAL'")

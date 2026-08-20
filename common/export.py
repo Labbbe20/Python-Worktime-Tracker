@@ -29,6 +29,7 @@ EXPORT_HEADERS = [
     "Dauer",
     "Standort",
     "Quelle",
+    "Status",
     "Halber_Tag",
     "Notiz",
     "Soll_Minuten",
@@ -50,7 +51,7 @@ SUMMARY_HEADERS = [
     "Notiz",
 ]
 SEGMENT_SHEET_HEADERS = ["Datum", "Wochentag", "Typ", "Beginn", "Ende", "Dauer", "Standort", "Quelle"]
-ABSENCE_SHEET_HEADERS = ["Datum", "Wochentag", "Typ", "Halber_Tag", "Notiz"]
+ABSENCE_SHEET_HEADERS = ["Datum", "Wochentag", "Typ", "Status", "Halber_Tag", "Notiz", "Quelle"]
 NOTE_SHEET_HEADERS = ["Datum", "Wochentag", "Notiz"]
 PDF_HEADERS = [
     "Datensatz",
@@ -87,6 +88,8 @@ CATEGORY_LABELS = {
     "GLEITZEITTAG": "Gleitzeittag",
 }
 LOCATION_LABELS = {"OFFICE": "Büro", "HOME": "Homeoffice", "MIXED": "Gemischt", "UNKNOWN": "Unbekannt"}
+APPROVAL_STATUS_LABELS = {"planned": "Geplant", "approved": "Genehmigt"}
+DAY_TYPE_SOURCE_LABELS = {"MANUAL": "Manuell", "AUTO_STANDARD": "Automatisch"}
 EDITABLE_RECORD_TYPES = {"SEGMENT", "ABWESENHEIT", "NOTIZ"}
 OVERVIEW_RECORD_TYPE = "UEBERSICHT"
 DAY_TYPE_SUMMARY_CODES = {"VACATION", "SICK", "HOLIDAY", "TRAVEL", "FLEXTIME"}
@@ -352,8 +355,10 @@ def _absence_sheet_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "Datum": row.get("Datum", ""),
                 "Wochentag": row.get("Wochentag", ""),
                 "Typ": _display_category(row.get("Kategorie", "")),
+                "Status": _display_approval_status(row.get("Status", "")),
                 "Halber_Tag": row.get("Halber_Tag", ""),
                 "Notiz": row.get("Notiz", ""),
+                "Quelle": _display_day_type_source(row.get("Quelle", "")),
             }
         )
     return result
@@ -1580,6 +1585,8 @@ def _day_type_export_row(day_type: dict[str, Any], day: Date) -> dict[str, Any]:
         "Kategorie": day_type["type"],
         "Halber_Tag": int(bool(day_type["half_day"])),
         "Notiz": day_type.get("note") or "",
+        "Status": day_type.get("approval_status") or "approved",
+        "Quelle": day_type.get("source") or "MANUAL",
     }
 
 
@@ -1703,8 +1710,10 @@ def _read_structured_xlsx_rows(workbook) -> list[dict[str, Any]]:
                     "Wochentag": row.get("Wochentag", ""),
                     "ID": row.get("ID", ""),
                     "Kategorie": row.get("Typ", row.get("Kategorie", "")),
+                    "Status": row.get("Status", ""),
                     "Halber_Tag": row.get("Halber_Tag", ""),
                     "Notiz": row.get("Notiz", ""),
+                    "Quelle": row.get("Quelle", ""),
                 }
             )
     if "Notizen" in workbook.sheetnames:
@@ -1765,7 +1774,15 @@ def _import_day_type_row(conn, row: dict[str, Any], row_number: int) -> str:
     if day_type not in DAY_TYPES:
         raise ValueError(f"Zeile {row_number}: Abwesenheits-Typ ist ungueltig.")
     note = _clean_cell(_row_value(row, "Notiz")) or None
-    database.upsert_day_type(conn, date_text, day_type, _bool_from_cell(_row_value(row, "Halber_Tag")), note)
+    database.upsert_day_type(
+        conn,
+        date_text,
+        day_type,
+        _bool_from_cell(_row_value(row, "Halber_Tag")),
+        note,
+        _approval_status_code(_row_value(row, "Status")),
+        _day_type_source_code(_row_value(row, "Quelle")),
+    )
     return date_text
 
 
@@ -1817,6 +1834,14 @@ def _display_location(value: Any) -> str:
     return LOCATION_LABELS.get(str(value or ""), str(value or ""))
 
 
+def _display_approval_status(value: Any) -> str:
+    return APPROVAL_STATUS_LABELS.get(str(value or ""), str(value or "") or "Genehmigt")
+
+
+def _display_day_type_source(value: Any) -> str:
+    return DAY_TYPE_SOURCE_LABELS.get(str(value or ""), str(value or "") or "Manuell")
+
+
 def _record_type_code(value: Any) -> str:
     text = _clean_cell(value).upper().replace("Ü", "UE")
     return {
@@ -1849,6 +1874,23 @@ def _location_code(value: Any) -> str:
         if lowered == label.casefold():
             return code
     return upper
+
+
+def _approval_status_code(value: Any) -> str:
+    text = _clean_cell(value)
+    lowered = text.casefold()
+    if lowered in {"planned", "geplant"}:
+        return "planned"
+    if lowered in {"approved", "genehmigt", ""}:
+        return "approved"
+    return "approved"
+
+
+def _day_type_source_code(value: Any) -> str:
+    text = _clean_cell(value).upper()
+    if text in {"AUTO_STANDARD", "AUTOMATISCH"}:
+        return "AUTO_STANDARD"
+    return "MANUAL"
 
 
 def _row_value(row: dict[str, Any], *names: str) -> Any:

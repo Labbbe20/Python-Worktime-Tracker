@@ -8,7 +8,8 @@ import os
 import subprocess
 import sys
 import threading
-from datetime import datetime
+from datetime import date as Date
+from datetime import datetime, timedelta
 from typing import Any
 
 from common import database
@@ -20,6 +21,13 @@ from tracker.recorder import RecorderEvent, WorktimeRecorder
 
 SKIP_WORK_START = "__SKIP_WORK_START__"
 WEEKDAY_LABELS = ["Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag", "Sonntag"]
+DAY_TYPE_LABELS = {
+    "URLAUB": "Urlaub",
+    "KRANK": "Krank",
+    "FEIERTAG": "Feiertag",
+    "GLEITZEITTAG": "Gleitzeittag",
+    "DIENSTREISE": "Dienstreise",
+}
 TIME_DIALOG_SUBPROCESS = r"""
 import json
 import sys
@@ -109,6 +117,8 @@ def handle_startup_popups(recorder: WorktimeRecorder, notifier: NotificationCent
 
     for event in events:
         notifier.show("ArbeitszeitTracker", f"{event.message}: {event.date} {event.time[:5]} Uhr")
+    if settings.get("absence_reminder_mode") == "startup":
+        _show_absence_reminder(recorder, settings, notifier)
     return events
 
 
@@ -145,12 +155,12 @@ def end_day_with_optional_popup(recorder: WorktimeRecorder) -> RecorderEvent | N
 
 def show_info_popup_on_work_end(recorder: WorktimeRecorder, notifier: NotificationCenter) -> None:
     settings = _settings(recorder)
-    if settings.get("daily_info_popup_mode") != "work_end":
-        return
-    text = recorder.day_information_text()
-    if _show_info_popup("Tagesstand", text, dark=settings.get("darkmode") == "1"):
-        return
-    notifier.show("ArbeitszeitTracker", text.splitlines()[0] if text else "Tagesstand aktualisiert")
+    if settings.get("daily_info_popup_mode") == "work_end":
+        text = recorder.day_information_text()
+        if not _show_info_popup("Tagesstand", text, dark=settings.get("darkmode") == "1"):
+            notifier.show("ArbeitszeitTracker", text.splitlines()[0] if text else "Tagesstand aktualisiert")
+    if settings.get("absence_reminder_mode") == "work_end":
+        _show_absence_reminder(recorder, settings, notifier)
 
 
 class PopupScheduler:
@@ -216,6 +226,14 @@ class PopupScheduler:
             if not _show_info_popup("Tagesstand", text, dark=settings.get("darkmode") == "1"):
                 self.notifier.show("ArbeitszeitTracker", text.splitlines()[0] if text else "Tagesstand")
 
+        if (
+            settings.get("absence_reminder_mode") == "custom"
+            and settings.get("absence_reminder_time") == current_time
+            and ("absence", today_key) not in self._shown
+        ):
+            self._shown.add(("absence", today_key))
+            _show_absence_reminder(self.recorder, settings, self.notifier)
+
 
 def _handle_work_start_popup(recorder: WorktimeRecorder, settings: dict[str, str]) -> RecorderEvent | None:
     plan = recorder.preview_auto_start_day()
@@ -257,6 +275,58 @@ def _handle_work_end_startup_popup(recorder: WorktimeRecorder, settings: dict[st
 def _settings(recorder: WorktimeRecorder) -> dict[str, str]:
     with database.connect(recorder.db_path) as conn:
         return database.get_settings(conn)
+
+
+def _show_absence_reminder(
+    recorder: WorktimeRecorder,
+    settings: dict[str, str],
+    notifier: NotificationCenter,
+) -> bool:
+    text = _build_absence_reminder_message(recorder, settings)
+    if not text:
+        return False
+    if _show_info_popup("Abwesenheit prüfen", text, dark=settings.get("darkmode") == "1"):
+        return True
+    notifier.show("ArbeitszeitTracker", text.splitlines()[0] if text else "Abwesenheit prüfen")
+    return False
+
+
+def _build_absence_reminder_message(recorder: WorktimeRecorder, settings: dict[str, str]) -> str:
+    try:
+        days = max(0, int(settings.get("absence_reminder_days", "14") or "14"))
+    except ValueError:
+        days = 14
+    today = Date.today()
+    end = today + timedelta(days=days)
+    with database.connect(recorder.db_path) as conn:
+        database.apply_standard_day_types(conn, database.get_settings(conn), today.year)
+        if end.year != today.year:
+            database.apply_standard_day_types(conn, database.get_settings(conn), end.year)
+        rows = conn.execute(
+            """
+            SELECT * FROM day_types
+            WHERE approval_status = 'planned'
+              AND date BETWEEN ? AND ?
+            ORDER BY date, type
+            """,
+            (today.isoformat(), end.isoformat()),
+        ).fetchall()
+    if not rows:
+        return ""
+
+    lines = [
+        f"Tagesstand {today.isoformat()}",
+        f"Offen: {len(rows)}",
+        f"Zeitraum: {days} Tage",
+        "Abwesenheiten:",
+    ]
+    for row in rows:
+        weekday = _weekday_label(row["date"])
+        half = "halb" if row["half_day"] else "ganztägig"
+        note = f" · {row['note']}" if row["note"] else ""
+        label = DAY_TYPE_LABELS.get(row["type"], row["type"])
+        lines.append(f"- {label}: {weekday}, {row['date']} · {half}{note}")
+    return "\n".join(lines)
 
 
 def _ask_work_start_time(plan: RecorderEvent) -> str | None:
@@ -412,6 +482,7 @@ def _show_info_dashboard_tk(tk, title: str, message: str, dark: bool) -> None:
     root.columnconfigure(0, weight=1)
     root.rowconfigure(0, weight=1)
     root.configure(bg=palette["bg"])
+    close_popup = _build_info_close_action(root)
 
     canvas = tk.Canvas(root, bg=palette["bg"], borderwidth=0, highlightthickness=0)
     canvas.grid(row=0, column=0, sticky="nsew")
@@ -488,7 +559,7 @@ def _show_info_dashboard_tk(tk, title: str, message: str, dark: bool) -> None:
     segment_panel.columnconfigure(0, weight=1)
     tk.Label(
         segment_panel,
-        text="Segmente",
+        text=data.get("section_title") or "Segmente",
         bg=palette["surface"],
         fg=palette["text"],
         font=("", 15, "bold"),
@@ -522,14 +593,9 @@ def _show_info_dashboard_tk(tk, title: str, message: str, dark: bool) -> None:
             wraplength=680,
         ).grid(row=0, column=0, sticky="ew", padx=14, pady=12)
 
-    footer = tk.Frame(root, bg=palette["surface"], highlightbackground=palette["border"], highlightthickness=1)
-    footer.grid(row=1, column=0, sticky="ew")
-    footer.columnconfigure(0, weight=1)
-    close_button = _build_info_close_button(tk, footer, root, palette)
-    close_button.grid(row=0, column=1, padx=18, pady=12)
-    root.bind("<Escape>", lambda event: _close_tk_window(root))
-    root.bind("<Command-w>", lambda event: _close_tk_window(root))
-    root.protocol("WM_DELETE_WINDOW", lambda: _close_tk_window(root))
+    root.bind("<Escape>", close_popup)
+    root.bind("<Command-w>", close_popup)
+    root.protocol("WM_DELETE_WINDOW", lambda: close_popup())
 
     screen_width = root.winfo_screenwidth()
     screen_height = root.winfo_screenheight()
@@ -619,43 +685,24 @@ def _build_info_segment_row(tk, parent, segment: dict[str, str], palette: dict[s
     return row
 
 
-def _build_info_close_button(tk, parent, root, palette: dict[str, str]):
-    button = tk.Frame(
-        parent,
-        bg=palette["primary"],
-        cursor="hand2",
-    )
-    label = tk.Label(
-        button,
-        text="Schließen",
-        bg=palette["primary"],
-        fg="#ffffff",
-        padx=26,
-        pady=11,
-        font=("", 12, "bold"),
-        cursor="hand2",
-    )
-    label.pack(fill="both", expand=True)
+def _build_info_close_action(root):
+    closed = {"value": False}
 
-    def close(_event=None) -> None:
-        _close_tk_window(root)
+    def close(_event=None) -> str:
+        if closed["value"]:
+            return "break"
+        closed["value"] = True
+        try:
+            root.withdraw()
+        except Exception:
+            pass
+        try:
+            root.after(0, lambda: _close_tk_window(root))
+        except Exception:
+            _close_tk_window(root)
+        return "break"
 
-    def activate(_event=None) -> None:
-        button.configure(bg=palette["primary_active"])
-        label.configure(bg=palette["primary_active"], fg="#ffffff")
-
-    def deactivate(_event=None) -> None:
-        button.configure(bg=palette["primary"])
-        label.configure(bg=palette["primary"], fg="#ffffff")
-
-    for widget in (button, label):
-        widget.bind("<ButtonPress-1>", activate)
-        widget.bind("<ButtonRelease-1>", close)
-        widget.bind("<Enter>", activate)
-        widget.bind("<Leave>", deactivate)
-        widget.bind("<Return>", close)
-        widget.bind("<space>", close)
-    return button
+    return close
 
 
 def _close_tk_window(root) -> None:
@@ -706,7 +753,7 @@ def _activate_current_macos_process() -> None:
 
 
 def _parse_day_info_message(message: str) -> dict[str, Any]:
-    data: dict[str, Any] = {"date": "", "metrics": [], "segments": [], "notes": []}
+    data: dict[str, Any] = {"date": "", "metrics": [], "segments": [], "notes": [], "section_title": "Segmente"}
     in_segments = False
     for raw_line in message.splitlines():
         line = raw_line.strip()
@@ -715,8 +762,9 @@ def _parse_day_info_message(message: str) -> dict[str, Any]:
         if line.startswith("Tagesstand"):
             data["date"] = line.replace("Tagesstand", "", 1).strip()
             continue
-        if line == "Segmente:":
+        if line in {"Segmente:", "Abwesenheiten:", "Einträge:"}:
             in_segments = True
+            data["section_title"] = line[:-1]
             continue
         if in_segments:
             segment = _parse_info_segment_line(line)

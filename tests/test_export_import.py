@@ -81,6 +81,20 @@ def test_csv_import_recreates_editable_local_data(tmp_path):
     assert database.get_day_summary(target, "2026-07-06")["actual_minutes"] == 480
 
 
+def test_export_import_preserves_absence_approval_status(tmp_path):
+    source = make_conn(tmp_path, "status-source.db")
+    database.upsert_day_type(source, "2026-07-07", "URLAUB", note="Noch offen", approval_status="planned")
+    export_path = export.export_period(source, "2026-07-07", "2026-07-07", "csv", output_dir=tmp_path)
+
+    target = make_conn(tmp_path, "status-target.db")
+    export.import_file(target, export_path)
+    row = database.get_day_types_for_date(target, "2026-07-07")[0]
+
+    assert row["type"] == "URLAUB"
+    assert row["approval_status"] == "planned"
+    assert row["source"] == "MANUAL"
+
+
 def test_xlsx_import_recreates_editable_local_data(tmp_path):
     source = make_conn(tmp_path, "xlsx-source.db")
     database.add_segment(source, "2026-07-06", "WORK", "08:15:00", "16:45:00", "OFFICE", "MANUAL")

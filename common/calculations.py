@@ -204,6 +204,7 @@ def compute_day(
 
 def recalculate_day(conn, date_value: str, now: datetime | None = None) -> DayComputation:
     settings = _settings_with_effective_tracking_start(conn)
+    database.apply_standard_day_types(conn, settings, parse_date(date_value).year)
     segments = database.get_segments_for_date(conn, date_value)
     day_types = database.get_day_types_for_date(conn, date_value)
     result = compute_day(date_value, segments, day_types, settings, now=now)
@@ -223,7 +224,11 @@ def recalculate_day(conn, date_value: str, now: datetime | None = None) -> DayCo
 
 def recalculate_range(conn, start_date: str, end_date: str, now: datetime | None = None) -> None:
     settings = _settings_with_effective_tracking_start(conn)
-    for day in daterange(parse_date(start_date), parse_date(end_date)):
+    start_day = parse_date(start_date)
+    end_day = parse_date(end_date)
+    for year in range(start_day.year, end_day.year + 1):
+        database.apply_standard_day_types(conn, settings, year)
+    for day in daterange(start_day, end_day):
         date_text = day.isoformat()
         result = compute_day(
             date_text,
@@ -307,6 +312,7 @@ def get_flextime_balance(conn, through_date: str | None = None) -> int:
 
 
 def get_day_type_days(conn, year: int, day_type: str, start_date: str | None = None, end_date: str | None = None) -> float:
+    database.apply_standard_day_types(conn, database.get_settings(conn), year)
     params: list[Any] = [str(year), day_type]
     sql = "SELECT date, half_day FROM day_types WHERE substr(date, 1, 4) = ? AND type = ?"
     if start_date:
