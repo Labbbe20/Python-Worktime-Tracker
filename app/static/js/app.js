@@ -38,6 +38,8 @@ const VIEW_CLASSES = ["dashboard-view", "calendar-view", "entries-view", "statis
 let commandPollTimer = null;
 let autoRefreshTimer = null;
 let autoRefreshInFlight = false;
+let autoRefreshStartedAt = 0;
+let autoRefreshDueAt = 0;
 let refreshFocusHandlerAttached = false;
 
 const SETTINGS_HELP = {
@@ -76,7 +78,7 @@ document.querySelectorAll(".nav button[data-view]").forEach(button => {
   button.addEventListener("click", () => setView(button.dataset.view));
 });
 
-document.getElementById("refresh-view")?.addEventListener("click", () => refreshCurrentView({ silent: state.view !== "settings" }));
+document.getElementById("refresh-view")?.addEventListener("click", () => manualRefreshCurrentView());
 
 window.addEventListener("pywebviewready", async () => {
   syncNav();
@@ -497,12 +499,16 @@ async function loadDayDetail(date) {
           <h2>${date}</h2>
           <p>${escapeHtml(categoryLabel(detail.summary.day_category))} · Ist ${fmtMinutes(detail.summary.actual_minutes)} · Pause ${fmtMinutes(detail.summary.break_minutes)} · Saldo ${signedMinutes(detail.summary.balance_minutes)}</p>
         </div>
-        <button class="secondary" id="close-day-detail" type="button">Schließen</button>
+        <div class="row-actions">
+          <button class="secondary copy-day-email" type="button" data-date="${escapeHtml(date)}">E-Mail kopieren</button>
+          <button class="secondary" id="close-day-detail" type="button">Schließen</button>
+        </div>
       </div>
       ${renderDayEditorContent(detail, date)}
     </section>
   `;
   document.getElementById("close-day-detail").addEventListener("click", closeDayDetail);
+  bindEmailCopyButtons();
   bindDayForms(date, () => renderCalendar());
 }
 
@@ -971,6 +977,7 @@ function drawEntries() {
             <td data-label="Standort" class="entry-detail-cell" data-entry-field="location">${locationLabel(row.location)}</td>
             <td data-label="Notiz" class="entry-detail-cell entry-note-cell" data-entry-field="note">${escapeHtml(row.note || "—")}</td>
             <td class="row-actions entry-action-cell" data-label="Aktionen">
+              <button class="secondary compact-button copy-day-email entry-email-button" type="button" data-date="${row.date}" aria-label="E-Mail-Text zu ${row.date} kopieren">E-Mail</button>
               <button class="secondary edit-entry entry-toggle" data-date="${row.date}" aria-expanded="${editing ? "true" : "false"}" aria-label="${editing ? "Details schließen" : `Details zu ${row.date} öffnen`}">
                 <span class="button-label">${editing ? "Schließen" : "Details"}</span>
                 <span class="toggle-chevron" aria-hidden="true"></span>
@@ -997,6 +1004,7 @@ function drawEntries() {
       drawEntries();
     });
   });
+  bindEmailCopyButtons(target);
   if (state.entryEditDate) renderEntryEditor(state.entryEditDate);
 }
 
@@ -1106,7 +1114,10 @@ async function renderEntryEditor(date, { showLoading = true } = {}) {
         <h2>${date} bearbeiten</h2>
         <p>${escapeHtml(categoryLabel(detail.summary.day_category))} · Ist ${fmtMinutes(detail.summary.actual_minutes)} · Pause ${fmtMinutes(detail.summary.break_minutes)} · Saldo ${signedMinutes(detail.summary.balance_minutes)}</p>
       </div>
-      <button class="secondary" id="close-entry-editor">Schließen</button>
+      <div class="row-actions">
+        <button class="secondary copy-day-email" type="button" data-date="${escapeHtml(date)}">E-Mail kopieren</button>
+        <button class="secondary" id="close-entry-editor">Schließen</button>
+      </div>
     </div>
     ${renderDayEditorContent(detail, date)}
   `;
@@ -1114,9 +1125,69 @@ async function renderEntryEditor(date, { showLoading = true } = {}) {
     state.entryEditDate = null;
     drawEntries();
   });
+  bindEmailCopyButtons(panel);
   bindDayForms(date, async () => {
     await loadEntries();
   });
+}
+
+function bindEmailCopyButtons(scope = document) {
+  scope.querySelectorAll(".copy-day-email").forEach(button => {
+    if (button.dataset.boundEmailCopy === "1") return;
+    button.dataset.boundEmailCopy = "1";
+    button.addEventListener("click", async event => {
+      event.preventDefault();
+      event.stopPropagation();
+      await copyDayEmail(button.dataset.date, button);
+    });
+  });
+}
+
+async function copyDayEmail(date, button = null) {
+  if (!date) return;
+  const originalText = button?.textContent;
+  try {
+    if (button) {
+      button.disabled = true;
+      button.textContent = "Kopiere...";
+    }
+    const result = await api("homeoffice_email", date);
+    await copyTextToClipboard(result.body || "");
+    notify("E-Mail-Text kopiert");
+  } catch (error) {
+    notify(error.message || String(error), "error");
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.textContent = originalText;
+    }
+  }
+}
+
+async function copyTextToClipboard(text) {
+  if (navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return;
+    } catch (error) {
+      console.warn(error);
+    }
+  }
+  if (window.pywebview?.api?.copy_to_clipboard) {
+    await api("copy_to_clipboard", text);
+    return;
+  }
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.setAttribute("readonly", "");
+  textarea.style.position = "fixed";
+  textarea.style.opacity = "0";
+  textarea.style.pointerEvents = "none";
+  document.body.appendChild(textarea);
+  textarea.select();
+  const copied = document.execCommand("copy");
+  textarea.remove();
+  if (!copied) throw new Error("Kopieren in die Zwischenablage nicht möglich.");
 }
 
 async function renderStatistics() {
@@ -1158,7 +1229,7 @@ function renderStatisticsBody(data) {
     ${statsTrendPanel(data.months)}
     <div class="table-wrap">
       <table>
-        <thead><tr><th>Monat</th><th>Soll</th><th>Ist</th><th>Saldo</th><th>Kumuliert</th><th>Urlaub</th><th>Krank</th><th>Homeoffice</th></tr></thead>
+        <thead><tr><th>Monat</th><th>Soll</th><th>Ist</th><th>Saldo</th><th>Kumuliert</th><th>Urlaub</th><th>Krank</th><th>Büro</th><th>Homeoffice</th><th>Gleitzeit</th></tr></thead>
         <tbody>${data.months.map(month => `
           <tr data-stats-month="${escapeHtml(month.year_month)}">
             <td data-label="Monat">${month.year_month}</td>
@@ -1168,7 +1239,9 @@ function renderStatisticsBody(data) {
             <td data-label="Kumuliert" data-stats-field="carry">${balanceBadge(month.carry_over_hours, month.carry_over_status)}</td>
             <td data-label="Urlaub" data-stats-field="vacation">${numberDe(month.vacation_days_used)}</td>
             <td data-label="Krank" data-stats-field="sick">${numberDe(month.sick_days_used)}</td>
-            <td data-label="Homeoffice" data-stats-field="homeoffice">${month.homeoffice_days}</td>
+            <td data-label="Büro" data-stats-field="office">${numberDe(month.office_days || 0)}</td>
+            <td data-label="Homeoffice" data-stats-field="homeoffice">${numberDe(month.homeoffice_days || 0)}</td>
+            <td data-label="Gleitzeit" data-stats-field="flextime">${numberDe(month.flextime_days || 0)}</td>
           </tr>
         `).join("")}</tbody>
       </table>
@@ -1234,7 +1307,9 @@ function updateStatsMonthRow(month) {
   setStatsCell(row, "balance", signedMinutes(month.balance_minutes));
   setStatsCell(row, "vacation", numberDe(month.vacation_days_used));
   setStatsCell(row, "sick", numberDe(month.sick_days_used));
-  setStatsCell(row, "homeoffice", month.homeoffice_days);
+  setStatsCell(row, "office", numberDe(month.office_days || 0));
+  setStatsCell(row, "homeoffice", numberDe(month.homeoffice_days || 0));
+  setStatsCell(row, "flextime", numberDe(month.flextime_days || 0));
   const carry = row.querySelector('[data-stats-field="carry"]');
   if (carry) carry.innerHTML = balanceBadge(month.carry_over_hours, month.carry_over_status);
 }
@@ -1251,24 +1326,22 @@ function updateStatsTrendPanel(months) {
 
 function statsTrendPanel(months) {
   const rows = Array.isArray(months) ? months : [];
-  const peakBalance = Math.max(60, ...rows.map(month => Math.abs(Number(month.balance_minutes) || 0)));
   return `
     <section class="panel stats-trend-panel" data-stats-trend-panel>
       <div class="stats-trend-head">
         <div>
-          <h2>Monatsvergleich</h2>
-          <p>Soll und Ist je Monat, darunter der Saldo um die Null-Linie.</p>
+          <h2>Monatsfortschritt</h2>
+          <p>100 % entspricht dem Soll des Monats. Die Füllung zeigt deine bisher erfasste Ist-Arbeitszeit.</p>
         </div>
         <div class="stats-trend-legend" aria-label="Legende">
-          <span><i class="legend-target"></i>Soll</span>
-          <span><i class="legend-actual"></i>Ist</span>
-          <span><i class="legend-positive"></i>Plus</span>
-          <span><i class="legend-negative"></i>Minus</span>
+          <span><i class="legend-behind"></i>Unter 75 %</span>
+          <span><i class="legend-warning"></i>75 bis 99 %</span>
+          <span><i class="legend-complete"></i>Soll erreicht</span>
         </div>
       </div>
       ${statsTrendSummary(rows)}
       <div class="stats-month-list" role="list">
-        ${rows.length ? rows.map(month => statsMonthComparisonRow(month, peakBalance)).join("") : `<div class="empty">Keine Monatswerte für dieses Jahr vorhanden.</div>`}
+        ${rows.length ? rows.map(month => statsMonthComparisonRow(month)).join("") : `<div class="empty">Keine Monatswerte für dieses Jahr vorhanden.</div>`}
       </div>
     </section>
   `;
@@ -1295,50 +1368,49 @@ function statsSummaryPill(label, value, signedValue = 0) {
   return `<article class="stats-summary-pill ${tone}"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></article>`;
 }
 
-function statsMonthComparisonRow(month, peakBalance) {
+function statsMonthComparisonRow(month) {
   const targetMinutes = Math.max(0, Number(month.target_minutes) || 0);
   const actualMinutes = Math.max(0, Number(month.actual_minutes) || 0);
   const balanceMinutes = Number(month.balance_minutes) || 0;
-  const rowMax = Math.max(60, targetMinutes, actualMinutes);
-  const targetWidth = targetMinutes ? Math.max(3, Math.min(100, (targetMinutes / rowMax) * 100)) : 0;
-  const actualWidth = actualMinutes ? Math.max(3, Math.min(100, (actualMinutes / rowMax) * 100)) : 0;
-  const balanceWidth = Math.min(50, (Math.abs(balanceMinutes) / Math.max(60, peakBalance)) * 50);
-  const negativeWidth = balanceMinutes < 0 ? balanceWidth : 0;
-  const positiveWidth = balanceMinutes > 0 ? balanceWidth : 0;
-  const tone = balanceMinutes > 0 ? "positive" : balanceMinutes < 0 ? "negative" : "neutral";
+  const progress = targetMinutes ? (actualMinutes / targetMinutes) * 100 : actualMinutes > 0 ? 100 : 0;
+  const progressWidth = Math.max(0, Math.min(100, progress));
+  const openMinutes = Math.max(0, targetMinutes - actualMinutes);
+  const overMinutes = Math.max(0, actualMinutes - targetMinutes);
+  const tone = progress >= 100 ? "complete" : progress >= 75 ? "warning" : "behind";
+  const statusText = targetMinutes
+    ? progress >= 100
+      ? `${fmtMinutes(overMinutes)} über Soll`
+      : `${fmtMinutes(openMinutes)} bis Soll`
+    : actualMinutes > 0
+      ? "Kein Soll hinterlegt"
+      : "Keine Arbeitszeit";
   const label = formatYearMonthShort(month.year_month);
   return `
     <article
       class="stats-month-comparison ${tone}"
       data-stats-month-card="${escapeHtml(month.year_month)}"
       role="listitem"
-      style="--target-width: ${targetWidth}%; --actual-width: ${actualWidth}%; --negative-width: ${negativeWidth}%; --positive-width: ${positiveWidth}%;"
-      aria-label="${escapeHtml(`${label}: Soll ${fmtMinutes(targetMinutes)}, Ist ${fmtMinutes(actualMinutes)}, Saldo ${signedMinutes(balanceMinutes)}`)}"
+      style="--progress-width: ${progressWidth}%;"
+      aria-label="${escapeHtml(`${label}: ${numberDe(progress)} Prozent vom Soll, Ist ${fmtMinutes(actualMinutes)}, Soll ${fmtMinutes(targetMinutes)}`)}"
     >
       <div class="stats-month-label">
         <strong>${escapeHtml(label.split(" ")[0])}</strong>
         <small>${escapeHtml(label.split(" ")[1] || "")}</small>
       </div>
       <div class="stats-month-visual">
-        <div class="stats-bar-row">
-          <span>Soll</span>
-          <div class="stats-bar-track"><i class="stats-bar-fill target"></i></div>
+        <div class="stats-progress-head">
+          <span>${numberDe(progress)} % vom Soll</span>
+          <strong>${escapeHtml(statusText)}</strong>
         </div>
-        <div class="stats-bar-row">
-          <span>Ist</span>
-          <div class="stats-bar-track"><i class="stats-bar-fill actual"></i></div>
-        </div>
-        <div class="stats-balance-axis" title="Saldo ${escapeHtml(signedMinutes(balanceMinutes))}">
-          <i class="stats-balance-fill negative"></i>
-          <i class="stats-balance-zero"></i>
-          <i class="stats-balance-fill positive"></i>
+        <div class="stats-progress-track" title="Ist ${escapeHtml(fmtMinutes(actualMinutes))} von Soll ${escapeHtml(fmtMinutes(targetMinutes))}">
+          <span></span>
         </div>
       </div>
       <div class="stats-month-values">
         <span><small>Soll</small><strong>${fmtMinutes(targetMinutes)}</strong></span>
         <span><small>Ist</small><strong>${fmtMinutes(actualMinutes)}</strong></span>
-        <span><small>Saldo</small><strong class="${tone === "negative" ? "negative" : tone === "positive" ? "positive" : ""}">${signedMinutes(balanceMinutes)}</strong></span>
-        <span><small>Konto</small><strong>${escapeHtml(month.carry_over_hours || "0")} h</strong></span>
+        <span><small>Saldo</small><strong class="${balanceMinutes < 0 ? "negative" : balanceMinutes > 0 ? "positive" : ""}">${signedMinutes(balanceMinutes)}</strong></span>
+        <span><small>Konto</small><strong>${escapeHtml(month.carry_over_hours || "0")}</strong></span>
       </div>
     </article>
   `;
@@ -2285,6 +2357,12 @@ function settingsSections(settings) {
       body: renderBufferSettings(settings),
     },
     {
+      key: "email",
+      title: "E-Mail",
+      summary: "Vorlage für Homeoffice-Zeiten",
+      body: renderEmailSettings(settings),
+    },
+    {
       key: "appearance",
       title: "Darstellung",
       summary: "Oberfläche und Lesbarkeit",
@@ -2655,6 +2733,15 @@ function renderBufferSettings(settings) {
     <label>Arbeitsende-Puffer Homeoffice (Minuten)
       <input name="home_end_buffer_minutes" type="number" min="0" step="1" value="${escapeHtml(settings.home_end_buffer_minutes || "0")}">
       <small class="help-text">Für den Weg vom automatischen Shutdown bis zur echten Abmeldung.</small>
+    </label>
+  `;
+}
+
+function renderEmailSettings(settings) {
+  return `
+    <label class="field-wide">Vorlage für PA-E-Mail
+      <textarea name="pa_email_template" rows="10">${escapeHtml(settings.pa_email_template || "")}</textarea>
+      <small class="help-text">Verfügbare Platzhalter: {datum}, {datum_iso}, {wochentag}, {segmente}, {beginn}, {ende}, {arbeitszeit}, {pause}, {saldo}.</small>
     </label>
   `;
 }
@@ -3702,14 +3789,24 @@ async function api(name, ...args) {
 function startCommandPolling() {
   if (commandPollTimer) return;
   checkAppCommand();
-  commandPollTimer = setInterval(checkAppCommand, 250);
+  checkAutoRefreshDue();
+  commandPollTimer = setInterval(() => {
+    checkAppCommand();
+    checkAutoRefreshDue();
+  }, 250);
 }
 
 function startAutoRefresh(settings = null) {
   state.autoRefreshIntervalSeconds = autoRefreshSeconds(settings?.auto_refresh_interval_seconds);
   if (!refreshFocusHandlerAttached) {
     window.addEventListener("focus", () => {
-      runAutoRefresh();
+      runAutoRefresh({ force: true });
+    });
+    window.addEventListener("pageshow", () => {
+      runAutoRefresh({ force: true });
+    });
+    document.addEventListener("visibilitychange", () => {
+      if (!document.hidden) runAutoRefresh({ force: true });
     });
     refreshFocusHandlerAttached = true;
   }
@@ -3717,20 +3814,68 @@ function startAutoRefresh(settings = null) {
     clearInterval(autoRefreshTimer);
     autoRefreshTimer = null;
   }
+  autoRefreshDueAt = 0;
   if (state.autoRefreshIntervalSeconds <= 0) return;
-  autoRefreshTimer = setInterval(() => {
-    runAutoRefresh();
-  }, state.autoRefreshIntervalSeconds * 1000);
+  scheduleNextAutoRefresh();
+  autoRefreshTimer = setInterval(checkAutoRefreshDue, Math.min(autoRefreshIntervalMs(), 10000));
 }
 
-async function runAutoRefresh() {
-  if (autoRefreshInFlight || !shouldAutoRefresh()) return;
+function checkAutoRefreshDue() {
+  if (state.autoRefreshIntervalSeconds <= 0 || !autoRefreshDueAt) return;
+  if (Date.now() >= autoRefreshDueAt) runAutoRefresh();
+}
+
+async function runAutoRefresh({ force = false } = {}) {
+  if (state.autoRefreshIntervalSeconds <= 0) return;
+  if (autoRefreshInFlight) {
+    if (isAutoRefreshStale()) {
+      console.warn("Auto-Refresh hing fest und wurde zurückgesetzt.");
+      resetAutoRefreshGuard();
+    } else {
+      return;
+    }
+  }
+  if (!shouldAutoRefresh()) {
+    scheduleNextAutoRefresh(5000);
+    return;
+  }
   autoRefreshInFlight = true;
+  autoRefreshStartedAt = Date.now();
   try {
     await refreshCurrentView({ silent: true });
   } finally {
-    autoRefreshInFlight = false;
+    resetAutoRefreshGuard();
+    scheduleNextAutoRefresh();
   }
+}
+
+async function manualRefreshCurrentView() {
+  resetAutoRefreshGuard();
+  await refreshCurrentView({ silent: state.view !== "settings" });
+  scheduleNextAutoRefresh();
+}
+
+function resetAutoRefreshGuard() {
+  autoRefreshInFlight = false;
+  autoRefreshStartedAt = 0;
+}
+
+function isAutoRefreshStale() {
+  if (!autoRefreshStartedAt) return false;
+  const intervalMs = autoRefreshIntervalMs();
+  return Date.now() - autoRefreshStartedAt > Math.max(30000, intervalMs * 2);
+}
+
+function scheduleNextAutoRefresh(delayMs = null) {
+  if (state.autoRefreshIntervalSeconds <= 0) {
+    autoRefreshDueAt = 0;
+    return;
+  }
+  autoRefreshDueAt = Date.now() + (delayMs ?? autoRefreshIntervalMs());
+}
+
+function autoRefreshIntervalMs() {
+  return Math.max(10, state.autoRefreshIntervalSeconds || 60) * 1000;
 }
 
 async function refreshCurrentView({ silent = false } = {}) {
@@ -3764,7 +3909,6 @@ async function refreshCurrentView({ silent = false } = {}) {
 
 function shouldAutoRefresh() {
   const active = document.activeElement;
-  if (document.hidden) return false;
   if (state.calendarDetailDate || state.entryEditDate) return false;
   if (document.querySelector(".modal-backdrop")) return false;
   if (active?.closest?.("form")) return false;

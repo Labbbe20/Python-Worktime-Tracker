@@ -94,4 +94,7 @@ def test_calculator_navigation_and_route_exist():
 def test_command_polling_reacts_quickly_for_preloaded_app():
     script = APP_JS.read_text(encoding="utf-8")
 
-    assert "setInterval(checkAppCommand, 250)" in script
+    assert "setInterval(() => {" in script
+    assert "checkAppCommand();" in script
+    assert "checkAutoRefreshDue();" in script
+    assert "}, 250)" in script

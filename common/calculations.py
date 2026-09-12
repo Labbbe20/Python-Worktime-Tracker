@@ -343,14 +343,7 @@ def get_year_statistics(conn, year: int) -> dict[str, Any]:
         start, end = stats_range
         summaries = database.get_day_summaries_between(conn, start, end)
         open_dates = _open_segment_dates(conn, start, end)
-        month_rows = conn.execute(
-            """
-            SELECT * FROM month_closing
-            WHERE year_month BETWEEN ? AND ?
-            ORDER BY year_month
-            """,
-            (start[:7], end[:7]),
-        ).fetchall()
+        month_rows = _statistics_month_rows(conn, start, end, summaries, open_dates)
         flextime_through = end
         vacation_used = get_day_type_days(conn, year, "URLAUB", start, end)
         sick_used = get_day_type_days(conn, year, "KRANK", start, end)
@@ -686,7 +679,53 @@ def _settings_with_effective_tracking_start(conn) -> dict[str, str]:
     return settings
 
 
-def _month_row_with_status(row) -> dict[str, Any]:
+def _statistics_month_rows(
+    conn,
+    range_start: str,
+    range_end: str,
+    summaries: Iterable[Mapping[str, Any]],
+    open_dates: set[str],
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    summaries_by_month: dict[str, list[Mapping[str, Any]]] = {}
+    for row in summaries:
+        summaries_by_month.setdefault(str(row["date"])[:7], []).append(row)
+
+    current = parse_date(range_start).replace(day=1)
+    final = parse_date(range_end).replace(day=1)
+    while current <= final:
+        year_month = current.strftime("%Y-%m")
+        last_day = calendar.monthrange(current.year, current.month)[1]
+        month_start = max(f"{year_month}-01", range_start)
+        month_end = min(f"{year_month}-{last_day:02d}", range_end)
+        month_summaries = summaries_by_month.get(year_month, [])
+        closing = database.get_month_closing(conn, year_month)
+        rows.append(
+            {
+                "year_month": year_month,
+                "target_minutes": sum(int(row["target_minutes"]) for row in month_summaries),
+                "actual_minutes": sum(int(row["actual_minutes"]) for row in month_summaries),
+                "break_minutes": sum(int(row["break_minutes"]) for row in month_summaries),
+                "balance_minutes": sum(
+                    int(row["balance_minutes"]) for row in month_summaries if row["date"] not in open_dates
+                ),
+                "carry_over_minutes": get_flextime_balance(conn, month_end),
+                "vacation_days_used": get_day_type_days(conn, current.year, "URLAUB", month_start, month_end),
+                "sick_days_used": get_day_type_days(conn, current.year, "KRANK", month_start, month_end),
+                "homeoffice_days": sum(1 for row in month_summaries if row["location"] == "HOME"),
+                "office_days": sum(1 for row in month_summaries if row["location"] == "OFFICE"),
+                "flextime_days": get_day_type_days(conn, current.year, "GLEITZEITTAG", month_start, month_end),
+                "closed": int(closing["closed"]) if closing else 0,
+                "closed_at": closing["closed_at"] if closing else None,
+            }
+        )
+        next_year = current.year + (current.month // 12)
+        next_month = 1 if current.month == 12 else current.month + 1
+        current = Date(next_year, next_month, 1)
+    return rows
+
+
+def _month_row_with_status(row, extras: Mapping[str, Any] | None = None) -> dict[str, Any]:
     data = dict(row)
     status = classify_balance(int(data["carry_over_minutes"]))
     data["carry_over_status"] = {
@@ -695,6 +734,10 @@ def _month_row_with_status(row) -> dict[str, Any]:
         "label": status.label,
     }
     data["carry_over_hours"] = format_minutes_as_decimal_hours(int(data["carry_over_minutes"]))
+    if extras:
+        data.update(extras)
+    data.setdefault("office_days", 0)
+    data.setdefault("flextime_days", 0.0)
     return data
 
 

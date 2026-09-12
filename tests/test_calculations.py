@@ -325,6 +325,52 @@ def test_month_closing_is_updated(tmp_path):
     assert closing["carry_over_minutes"] == 60
 
 
+def test_year_statistics_month_rows_include_office_and_flextime_days(tmp_path):
+    conn = make_conn(tmp_path)
+    database.set_setting(conn, "tracking_start_date", "2026-07-01")
+    database.add_segment(conn, "2026-07-06", "WORK", "08:00:00", "17:00:00", "OFFICE")
+    database.add_segment(conn, "2026-07-07", "WORK", "08:00:00", "16:00:00", "HOME")
+    database.upsert_day_type(conn, "2026-07-08", "GLEITZEITTAG", half_day=True)
+
+    calculations.recalculate_range(conn, "2026-07-01", "2026-07-31")
+    stats = calculations.get_year_statistics(conn, 2026)
+    july = next(month for month in stats["months"] if month["year_month"] == "2026-07")
+
+    assert july["office_days"] == 1
+    assert july["homeoffice_days"] == 1
+    assert july["flextime_days"] == 0.5
+
+
+def test_year_statistics_uses_valid_range_for_month_totals_and_special_days(tmp_path):
+    conn = make_conn(tmp_path)
+    database.set_settings(conn, {"tracking_start_date": "2026-07-15", "daily_break_minutes": "0"})
+    database.upsert_day_type(conn, "2026-07-10", "URLAUB")
+    database.upsert_day_type(conn, "2026-07-15", "URLAUB")
+    database.upsert_day_type(conn, "2026-07-16", "GLEITZEITTAG")
+    database.add_segment(conn, "2026-07-17", "WORK", "08:00:00", "16:00:00", "OFFICE")
+
+    calculations.recalculate_range(conn, "2026-07-01", "2026-07-31")
+    database.upsert_month_closing(conn, "2026-07", 9999, 9999, 9999, 9999, 9.0, 9.0, 9)
+    stats = calculations.get_year_statistics(conn, 2026)
+    july = next(month for month in stats["months"] if month["year_month"] == "2026-07")
+    settings = database.get_settings(conn)
+    expected_target = sum(
+        calculations.get_target_minutes_for_date(day, settings)
+        for day in calculations.daterange(Date(2026, 7, 15), Date(2026, 7, 31))
+    )
+    expected_actual = 480 + 480
+
+    assert july["target_minutes"] == expected_target
+    assert july["actual_minutes"] == expected_actual
+    assert july["balance_minutes"] == expected_actual - expected_target
+    assert july["vacation_days_used"] == 1
+    assert july["flextime_days"] == 1
+    assert july["office_days"] == 1
+    assert stats["target_minutes"] == expected_target
+    assert stats["actual_minutes"] == expected_actual
+    assert stats["vacation_used"] == 1
+
+
 def test_open_segment_is_not_counted_in_flextime_account(tmp_path):
     conn = make_conn(tmp_path)
     database.add_segment(conn, "2026-07-06", "WORK", "08:00:00", None, "OFFICE")

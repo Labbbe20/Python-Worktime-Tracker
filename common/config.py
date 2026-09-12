@@ -70,6 +70,13 @@ DEFAULT_SETTINGS: dict[str, str] = {
     "absence_reminder_mode": "off",
     "absence_reminder_days": "14",
     "absence_reminder_time": "09:00",
+    "pa_email_template": (
+        "Hallo zusammen,\n\n"
+        "hier meine Arbeitszeiten aus dem Homeoffice vom {datum}:\n\n"
+        "{segmente}\n\n"
+        "Vielen Dank fürs Eintragen.\n\n"
+        "Viele Grüße"
+    ),
     "dashboard_absence_countdown_mode": "workdays",
     "standard_absence_1224_mode": "off",
     "standard_absence_1231_mode": "off",

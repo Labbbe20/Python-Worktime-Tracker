@@ -7,6 +7,9 @@ import binascii
 import calendar
 import json
 import logging
+import shutil
+import subprocess
+import sys
 import tempfile
 import threading
 import webbrowser
@@ -129,6 +132,21 @@ class WorktimeApi:
                 "day_type_ranges": _day_type_ranges_for_date(conn, date),
                 "note": database.get_note_for_date(conn, date),
             }
+
+    def homeoffice_email(self, date: str) -> dict[str, Any]:
+        with self._locked_conn() as conn:
+            summary = calculations.recalculate_day(conn, date)
+            settings = database.get_settings(conn)
+            segments = [dict(row) for row in database.get_segments_for_date(conn, date)]
+            template = settings.get("pa_email_template", "") or ""
+            return {
+                "date": date,
+                "body": _render_pa_email_template(template, date, summary.__dict__, segments),
+            }
+
+    def copy_to_clipboard(self, text: str) -> dict[str, Any]:
+        _copy_text_to_clipboard(str(text or ""))
+        return {"ok": True}
 
     def save_segment(self, payload: dict[str, Any]) -> dict[str, Any]:
         with self._locked_conn() as conn:
@@ -816,6 +834,114 @@ def _settings_for_ui(settings: dict[str, str]) -> dict[str, str]:
     result["auto_refresh_interval_seconds"] = _setting_int_for_ui(result.get("auto_refresh_interval_seconds", "60"))
     result["absence_reminder_days"] = _setting_int_for_ui(result.get("absence_reminder_days", "14"))
     return result
+
+
+def _render_pa_email_template(
+    template: str,
+    date: str,
+    summary: dict[str, Any],
+    segments: list[dict[str, Any]],
+) -> str:
+    work_segments = [segment for segment in segments if segment.get("type") == "WORK"]
+    first_start = _time_for_email(work_segments[0].get("start_time")) if work_segments else ""
+    ended_work = [segment for segment in work_segments if segment.get("end_time")]
+    last_end = _time_for_email(ended_work[-1].get("end_time")) if ended_work else ""
+    replacements = {
+        "datum": _date_for_email(date),
+        "datum_iso": date,
+        "wochentag": _weekday_for_email(date),
+        "segmente": _segments_for_email(segments),
+        "beginn": first_start or "--:--",
+        "ende": last_end or "läuft",
+        "arbeitszeit": calculations.minutes_to_hhmm(int(summary.get("actual_minutes") or 0)),
+        "pause": calculations.minutes_to_hhmm(int(summary.get("break_minutes") or 0)),
+        "saldo": _signed_minutes_for_email(int(summary.get("balance_minutes") or 0)),
+    }
+    result = template or "{segmente}"
+    for key, value in replacements.items():
+        result = result.replace("{" + key + "}", value)
+    return result
+
+
+def _segments_for_email(segments: list[dict[str, Any]]) -> str:
+    if not segments:
+        return "Keine Arbeitszeiten erfasst."
+    lines = []
+    for segment in segments:
+        start = _time_for_email(segment.get("start_time"))
+        end = _time_for_email(segment.get("end_time")) if segment.get("end_time") else ""
+        time_text = f"{start} bis {end} Uhr" if end else f"seit {start} Uhr läuft"
+        lines.append(f"- {_segment_label_for_email(segment.get('type'))}: {time_text}")
+    return "\n".join(lines)
+
+
+def _segment_label_for_email(segment_type: Any) -> str:
+    return {
+        "WORK": "Arbeit",
+        "BREAK": "Pause",
+        "ABSENCE": "Abwesenheit",
+    }.get(str(segment_type or ""), "Segment")
+
+
+def _time_for_email(value: Any) -> str:
+    return str(value or "")[:5] or "--:--"
+
+
+def _date_for_email(date: str) -> str:
+    day = parse_date(date)
+    return f"{day.day:02d}.{day.month:02d}.{day.year:04d}"
+
+
+def _weekday_for_email(date: str) -> str:
+    return ["Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag", "Sonntag"][parse_date(date).weekday()]
+
+
+def _signed_minutes_for_email(minutes: int) -> str:
+    prefix = "+" if minutes >= 0 else ""
+    return f"{prefix}{calculations.minutes_to_hhmm(minutes)}"
+
+
+def _copy_text_to_clipboard(text: str) -> None:
+    if sys.platform == "darwin":
+        subprocess.run(["pbcopy"], input=text, text=True, check=True)
+        return
+    if sys.platform == "win32":
+        try:
+            import win32clipboard  # type: ignore
+            import win32con  # type: ignore
+        except ImportError:
+            _copy_text_with_tkinter(text)
+            return
+        win32clipboard.OpenClipboard()
+        try:
+            win32clipboard.EmptyClipboard()
+            win32clipboard.SetClipboardData(win32con.CF_UNICODETEXT, text)
+        finally:
+            win32clipboard.CloseClipboard()
+        return
+    for command in ("wl-copy", "xclip", "xsel"):
+        if shutil.which(command):
+            args = {
+                "wl-copy": ["wl-copy"],
+                "xclip": ["xclip", "-selection", "clipboard"],
+                "xsel": ["xsel", "--clipboard", "--input"],
+            }[command]
+            subprocess.run(args, input=text, text=True, check=True)
+            return
+    _copy_text_with_tkinter(text)
+
+
+def _copy_text_with_tkinter(text: str) -> None:
+    import tkinter as tk
+
+    root = tk.Tk()
+    root.withdraw()
+    try:
+        root.clipboard_clear()
+        root.clipboard_append(text)
+        root.update()
+    finally:
+        root.destroy()
 
 
 def _normalize_settings_input(values: dict[str, Any]) -> dict[str, str]:

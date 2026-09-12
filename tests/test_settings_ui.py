@@ -24,6 +24,7 @@ def test_settings_categories_are_split_and_sap_help_explains_source_tables():
         "Standortcheck",
         "Officequote",
         "Zeitpuffer",
+        "E-Mail",
         "Backup, Import & Export",
     ):
         assert label in script
@@ -48,6 +49,71 @@ def test_vacation_and_popup_settings_use_conditional_editors():
     assert "standard-field-label" in script
     assert "standard-hidden-date-picker" not in script
     assert "showPicker" not in script
+
+
+def test_email_template_settings_and_copy_buttons_are_available(tmp_path, monkeypatch):
+    script = APP_JS.read_text(encoding="utf-8")
+    styles = APP_CSS.read_text(encoding="utf-8")
+    api = WorktimeApi(tmp_path / "database.db")
+
+    api.save_settings(
+        {
+            "pa_email_template": (
+                "Hallo\n"
+                "{wochentag}, {datum}\n"
+                "{segmente}\n"
+                "Ist {arbeitszeit}, Pause {pause}, Saldo {saldo}"
+            )
+        }
+    )
+    api.save_segment(
+        {
+            "date": "2026-07-06",
+            "type": "WORK",
+            "start_time": "06:45",
+            "end_time": "12:00",
+            "location": "HOME",
+            "source": "MANUAL",
+        }
+    )
+    api.save_segment(
+        {
+            "date": "2026-07-06",
+            "type": "BREAK",
+            "start_time": "12:00",
+            "end_time": "12:45",
+            "source": "MANUAL",
+        }
+    )
+    api.save_segment(
+        {
+            "date": "2026-07-06",
+            "type": "WORK",
+            "start_time": "12:45",
+            "end_time": "17:00",
+            "location": "HOME",
+            "source": "MANUAL",
+        }
+    )
+
+    draft = api.homeoffice_email("2026-07-06")
+
+    assert "pa_email_template" in script
+    assert "copy-day-email" in script
+    assert "copy_to_clipboard" in script
+    assert "homeoffice_email" in script
+    assert "E-Mail kopieren" in script
+    assert ".entry-email-button" in styles
+    assert "Montag, 06.07.2026" in draft["body"]
+    assert "Arbeit: 06:45 bis 12:00 Uhr" in draft["body"]
+    assert "Pause: 12:00 bis 12:45 Uhr" in draft["body"]
+    assert "Arbeit: 12:45 bis 17:00 Uhr" in draft["body"]
+    assert "Ist 9:30, Pause 0:45, Saldo +1:30" in draft["body"]
+
+    copied = []
+    monkeypatch.setattr("app.api._copy_text_to_clipboard", lambda text: copied.append(text))
+    assert api.copy_to_clipboard("Test") == {"ok": True}
+    assert copied == ["Test"]
 
 
 def test_calendar_view_uses_compact_responsive_layout():
@@ -156,20 +222,24 @@ def test_dashboard_other_details_use_insight_cards_and_trends():
     assert ".dashboard-progress:hover" in styles
 
 
-def test_statistics_uses_readable_month_comparison_instead_of_canvas_chart():
+def test_statistics_uses_readable_month_progress_instead_of_canvas_chart():
     script = APP_JS.read_text(encoding="utf-8")
     styles = APP_CSS.read_text(encoding="utf-8")
 
     assert "statsTrendPanel(data.months)" in script
     assert "statsMonthComparisonRow" in script
-    assert "Monatsvergleich" in script
-    assert "Null-Linie" in script
+    assert "Monatsfortschritt" in script
+    assert "100 % entspricht dem Soll des Monats" in script
+    assert "--progress-width" in script
+    assert "Büro" in script
+    assert "Gleitzeit" in script
     assert "loadChartLibrary" not in script
     assert "drawStatsChart" not in script
     assert "stats-chart" not in script
     assert ".stats-trend-panel" in styles
     assert ".stats-month-comparison" in styles
-    assert ".stats-balance-axis" in styles
+    assert ".stats-progress-track" in styles
+    assert ".stats-month-comparison.complete" in styles
     assert ".stats-month-comparison:hover" in styles
 
 
@@ -224,6 +294,23 @@ def test_api_saves_auto_refresh_interval(tmp_path):
     result = api.save_settings({"auto_refresh_interval_seconds": "300"})
 
     assert result["settings"]["auto_refresh_interval_seconds"] == "300"
+
+
+def test_auto_refresh_recovers_from_hidden_windows_and_stale_guard():
+    script = APP_JS.read_text(encoding="utf-8")
+
+    assert "manualRefreshCurrentView" in script
+    assert "resetAutoRefreshGuard()" in script
+    assert "autoRefreshStartedAt" in script
+    assert "autoRefreshDueAt" in script
+    assert "checkAutoRefreshDue()" in script
+    assert "scheduleNextAutoRefresh()" in script
+    assert "autoRefreshIntervalMs()" in script
+    assert "isAutoRefreshStale()" in script
+    assert "visibilitychange" in script
+    assert "pageshow" in script
+    assert "Auto-Refresh hing fest" in script
+    assert "if (document.hidden) return false" not in script
 
 
 def test_export_defaults_cover_all_real_local_data_and_future_absence(tmp_path):
