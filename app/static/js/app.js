@@ -3,7 +3,9 @@ const state = {
   calendarDate: new Date(),
   selectedDate: isoToday(),
   calendarDetailDate: null,
+  calendarSegmentEditDate: null,
   entryEditDate: null,
+  entrySegmentEditDate: null,
   dashboardDetailKey: null,
   settingsDetailKey: "",
   entries: [],
@@ -129,6 +131,8 @@ async function checkInitialSetup(settings = null) {
 }
 
 function setView(view) {
+  if (view === state.view) return true;
+  if (!canLeaveDetailEditMode(document)) return false;
   if (view === "settings") {
     state.settingsDetailKey = "";
   }
@@ -136,6 +140,7 @@ function setView(view) {
   window.location.hash = view;
   syncNav();
   render();
+  return true;
 }
 
 window.__worktimeSetView = setView;
@@ -349,32 +354,43 @@ async function renderCalendar() {
     <section id="day-detail-shell" class="detail-shell"></section>
   `;
   document.getElementById("prev-year").addEventListener("click", () => {
+    if (!canLeaveDetailEditMode(document.getElementById("day-detail"))) return;
     state.calendarDetailDate = null;
+    state.calendarSegmentEditDate = null;
     state.calendarDate = new Date(year - 1, month - 1, 1);
     renderCalendar();
   });
   document.getElementById("today-month").addEventListener("click", () => {
+    if (!canLeaveDetailEditMode(document.getElementById("day-detail"))) return;
     state.calendarDate = new Date();
     state.selectedDate = isoToday();
     state.calendarDetailDate = null;
+    state.calendarSegmentEditDate = null;
     renderCalendar();
   });
   document.getElementById("next-year").addEventListener("click", () => {
+    if (!canLeaveDetailEditMode(document.getElementById("day-detail"))) return;
     state.calendarDetailDate = null;
+    state.calendarSegmentEditDate = null;
     state.calendarDate = new Date(year + 1, month - 1, 1);
     renderCalendar();
   });
   document.querySelectorAll(".month-pill").forEach(button => {
     button.addEventListener("click", () => {
+      if (!canLeaveDetailEditMode(document.getElementById("day-detail"))) return;
       state.calendarDetailDate = null;
+      state.calendarSegmentEditDate = null;
       state.calendarDate = new Date(year, Number(button.dataset.month) - 1, 1);
       renderCalendar();
     });
   });
   document.querySelectorAll(".day-tile").forEach(button => {
     button.addEventListener("click", async () => {
+      const nextDate = state.calendarDetailDate === button.dataset.date ? null : button.dataset.date;
+      if (state.calendarSegmentEditDate !== nextDate && !canLeaveDetailEditMode(document.getElementById("day-detail"))) return;
       state.selectedDate = button.dataset.date;
-      state.calendarDetailDate = state.calendarDetailDate === button.dataset.date ? null : button.dataset.date;
+      state.calendarDetailDate = nextDate;
+      if (state.calendarSegmentEditDate !== nextDate) state.calendarSegmentEditDate = null;
       updateCalendarSelection();
       if (state.calendarDetailDate) await loadDayDetail(state.calendarDetailDate);
       else closeDayDetail();
@@ -385,6 +401,7 @@ async function renderCalendar() {
     await loadDayDetail(state.calendarDetailDate);
   } else {
     state.calendarDetailDate = null;
+    state.calendarSegmentEditDate = null;
   }
 }
 
@@ -403,6 +420,7 @@ async function refreshCalendar({ silent = true } = {}) {
     await loadDayDetail(state.calendarDetailDate);
   } else {
     state.calendarDetailDate = null;
+    state.calendarSegmentEditDate = null;
   }
 }
 
@@ -492,28 +510,33 @@ async function loadDayDetail(date) {
   if (state.calendarDetailDate !== date) return;
   const target = document.getElementById("day-detail-shell");
   if (!target) return;
+  const editing = state.calendarSegmentEditDate === date;
   target.innerHTML = `
     <section id="day-detail" class="detail-panel stack calendar-detail-panel" aria-live="polite">
       <div class="page-head compact">
         <div>
-          <h2>${date}</h2>
-          <p>${escapeHtml(categoryLabel(detail.summary.day_category))} · Ist ${fmtMinutes(detail.summary.actual_minutes)} · Pause ${fmtMinutes(detail.summary.break_minutes)} · Saldo ${signedMinutes(detail.summary.balance_minutes)}</p>
+          <h2>${escapeHtml(dayDetailHeading(date))}</h2>
+          <p>${escapeHtml(categoryLabel(detail.summary.day_category))} · Ist ${fmtMinutes(detail.summary.actual_minutes)} · Pause ${fmtMinutes(detail.summary.break_minutes)} · Saldo ${signedMinutes(detail.summary.balance_minutes)} · ${editing ? "Bearbeiten" : "Nur anzeigen"}</p>
         </div>
         <div class="row-actions">
           <button class="secondary copy-day-email" type="button" data-date="${escapeHtml(date)}">E-Mail kopieren</button>
+          <button class="secondary detail-mode-toggle" type="button" data-detail-context="calendar" data-detail-mode="${editing ? "view" : "edit"}">${editing ? "Nur anzeigen" : "Bearbeiten"}</button>
           <button class="secondary" id="close-day-detail" type="button">Schließen</button>
         </div>
       </div>
-      ${renderDayEditorContent(detail, date)}
+      ${renderDayEditorContent(detail, date, { editable: editing })}
     </section>
   `;
   document.getElementById("close-day-detail").addEventListener("click", closeDayDetail);
   bindEmailCopyButtons();
-  bindDayForms(date, () => renderCalendar());
+  bindDetailModeButtons(date);
+  if (editing) bindDayForms(date, () => renderCalendar());
 }
 
 function closeDayDetail() {
+  if (!canLeaveDetailEditMode(document.getElementById("day-detail"))) return;
   state.calendarDetailDate = null;
+  state.calendarSegmentEditDate = null;
   const target = document.getElementById("day-detail-shell");
   if (target) target.innerHTML = "";
   updateCalendarSelection();
@@ -527,13 +550,24 @@ function updateCalendarSelection() {
   });
 }
 
-function renderDayEditorContent(detail, date) {
+function renderDayEditorContent(detail, date, { editable = false } = {}) {
+  if (!editable) {
+    return `
+      <div class="stack detail-view-mode">
+        ${renderDayNotePreview(detail.note)}
+        <div>
+          <h3>Segmente</h3>
+          ${renderSegmentTable(detail.segments, date, { editable: false })}
+        </div>
+      </div>
+    `;
+  }
   return `
-    <div class="stack">
+    <div class="stack detail-edit-mode" data-detail-dirty="0">
       ${renderDayNotePreview(detail.note)}
       <div>
         <h3>Segmente</h3>
-        ${renderSegmentTable(detail.segments, date)}
+        ${renderSegmentTable(detail.segments, date, { editable: true })}
       </div>
       <form id="new-segment" class="form-row">
         <label>Typ
@@ -558,8 +592,10 @@ function renderDayEditorContent(detail, date) {
         <label>Notiz
           <textarea name="note">${escapeHtml(detail.note || "")}</textarea>
         </label>
-        <button class="form-submit">Notiz speichern</button>
       </form>
+      <div class="form-actions detail-save-actions">
+        <button id="save-day-detail" type="button">Änderungen speichern</button>
+      </div>
     </div>
   `;
 }
@@ -574,12 +610,37 @@ function renderDayNotePreview(note) {
   `;
 }
 
-function renderSegmentTable(segments, date) {
+function renderSegmentTable(segments, date, { editable = true } = {}) {
   if (!segments.length) return `<p class="muted">Noch keine Segmente für diesen Tag.</p>`;
+  if (!editable) {
+    return `
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Typ</th><th>Zeitraum</th><th>Standort</th></tr></thead>
+          <tbody>
+            ${segments.map(segment => `
+              <tr>
+                <td data-label="Typ">${segmentTypeLabel(segment.type)}</td>
+                <td data-label="Zeitraum">${segmentTimeRange(segment)}</td>
+                <td data-label="Standort">${segment.type === "WORK" ? locationLabel(segment.location) : "—"}</td>
+              </tr>
+            `).join("")}
+          </tbody>
+        </table>
+      </div>
+    `;
+  }
   return `
     <div class="table-wrap">
-      <table>
-        <thead><tr><th>Typ</th><th>Beginn</th><th>Ende</th><th>Standort</th><th>Aktionen</th></tr></thead>
+      <table class="segment-edit-table">
+        <colgroup>
+          <col class="segment-col-type">
+          <col class="segment-col-time">
+          <col class="segment-col-time">
+          <col class="segment-col-location">
+          <col class="segment-col-actions">
+        </colgroup>
+        <thead><tr><th>Typ</th><th>Beginn</th><th>Ende</th><th>Standort</th><th class="segment-action-heading" aria-label="Aktionen"></th></tr></thead>
         <tbody>
           ${segments.map(segment => `
             <tr data-id="${segment.id}">
@@ -595,9 +656,8 @@ function renderSegmentTable(segments, date) {
                   ${["UNKNOWN", "OFFICE", "HOME"].map(value => `<option value="${value}" ${segment.location === value ? "selected" : ""}>${locationLabel(value)}</option>`).join("")}
                 </select>
               </td>
-              <td class="row-actions" data-label="Aktionen">
-                <button class="save-segment" data-date="${date}">Speichern</button>
-                <button class="danger delete-segment">Löschen</button>
+              <td class="row-actions segment-action-cell" data-label="Aktionen">
+                <button class="secondary segment-remove delete-segment" type="button" title="Segment löschen" aria-label="Segment löschen">×</button>
               </td>
             </tr>
           `).join("")}
@@ -607,29 +667,37 @@ function renderSegmentTable(segments, date) {
   `;
 }
 
+function segmentTimeRange(segment) {
+  const start = timeShort(segment.start_time) || "—";
+  const end = timeShort(segment.end_time) || "läuft";
+  return `${start} bis ${end}`;
+}
+
 function bindDayForms(date, refresh = () => loadDayDetail(date)) {
-  document.querySelectorAll(".save-segment").forEach(button => {
-    button.addEventListener("click", async event => {
-      event.preventDefault();
-      const row = button.closest("tr");
-      await api("save_segment", collectSegment(row, date));
-      notify("Segment gespeichert");
-      await refresh();
-    });
+  bindDetailDirtyTracking();
+  document.getElementById("save-day-detail")?.addEventListener("click", async event => {
+    event.preventDefault();
+    await saveAllDayChanges(date, refresh, event.currentTarget);
   });
   document.querySelectorAll(".delete-segment").forEach(button => {
     button.addEventListener("click", async event => {
       event.preventDefault();
       if (!confirm("Segment wirklich löschen?")) return;
       const row = button.closest("tr");
+      if (detailHasUnsavedChanges(row.closest(".detail-panel"))) {
+        await saveDayEditPayload(date);
+      }
       await api("delete_segment", Number(row.dataset.id));
       notify("Segment gelöscht");
       await refresh();
     });
   });
-  document.getElementById("new-segment").addEventListener("submit", async event => {
+  document.getElementById("new-segment")?.addEventListener("submit", async event => {
     event.preventDefault();
     const form = event.currentTarget;
+    if (detailHasUnsavedChanges(form.closest(".detail-panel"))) {
+      await saveDayEditPayload(date);
+    }
     await api("save_segment", {
       date,
       type: form.type.value,
@@ -641,12 +709,90 @@ function bindDayForms(date, refresh = () => loadDayDetail(date)) {
     notify("Segment hinzugefügt");
     await refresh();
   });
-  document.getElementById("note-form").addEventListener("submit", async event => {
-    event.preventDefault();
-    await api("save_note", date, event.currentTarget.note.value);
-    notify("Notiz gespeichert");
+}
+
+async function saveAllDayChanges(date, refresh, button = null) {
+  const originalText = button?.textContent;
+  if (button) {
+    button.disabled = true;
+    button.textContent = "Speichere ...";
+  }
+  try {
+    await saveDayEditPayload(date);
+    notify("Änderungen gespeichert");
     await refresh();
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.textContent = originalText;
+    }
+  }
+}
+
+function saveDayEditPayload(date) {
+  return api("save_day_edits", date, collectDayEditPayload(date));
+}
+
+function collectDayEditPayload(date) {
+  return {
+    segments: [...document.querySelectorAll(".detail-edit-mode tr[data-id]")].map(row => collectSegment(row, date)),
+    note: document.querySelector('#note-form [name="note"]')?.value || "",
+  };
+}
+
+function bindDetailModeButtons(date) {
+  document.querySelectorAll(".detail-mode-toggle").forEach(button => {
+    button.addEventListener("click", async () => {
+      const context = button.dataset.detailContext;
+      const nextMode = button.dataset.detailMode;
+      if (context === "calendar") {
+        state.calendarSegmentEditDate = nextMode === "edit" ? date : null;
+        await loadDayDetail(date);
+        return;
+      }
+      if (context === "entries") {
+        state.entrySegmentEditDate = nextMode === "edit" ? date : null;
+        await renderEntryEditor(date, { showLoading: false });
+      }
+    });
   });
+}
+
+function bindDetailDirtyTracking(scope = document) {
+  const panel = scope.querySelector?.(".detail-edit-mode") || document.querySelector(".detail-edit-mode");
+  if (!panel) return;
+  const controls = [...panel.querySelectorAll("input, select, textarea")];
+  controls.forEach(control => {
+    control.dataset.initialValue = control.value;
+    control.addEventListener("input", () => updateDetailDirtyState(panel));
+    control.addEventListener("change", () => updateDetailDirtyState(panel));
+  });
+  updateDetailDirtyState(panel);
+}
+
+function updateDetailDirtyState(panel) {
+  const dirty = [...panel.querySelectorAll("input, select, textarea")].some(control => control.value !== control.dataset.initialValue);
+  panel.dataset.detailDirty = dirty ? "1" : "0";
+  updateDetailModeButtonLabel(panel, dirty);
+}
+
+function updateDetailModeButtonLabel(panel, dirty = detailHasUnsavedChanges(panel)) {
+  const button = panel?.closest?.(".detail-panel")?.querySelector('.detail-mode-toggle[data-detail-mode="view"]');
+  if (!button) return;
+  button.textContent = dirty ? "Abbrechen" : "Nur anzeigen";
+  button.title = dirty ? "Ungespeicherte Änderungen verwerfen" : "Zur Ansicht wechseln";
+  button.setAttribute("aria-label", dirty ? "Ungespeicherte Änderungen verwerfen" : "Zur Ansicht wechseln");
+}
+
+function detailHasUnsavedChanges(scope = document) {
+  const panel = scope?.querySelector?.(".detail-edit-mode") || scope?.closest?.(".detail-panel")?.querySelector(".detail-edit-mode") || document.querySelector(".detail-edit-mode");
+  return panel?.dataset.detailDirty === "1";
+}
+
+function canLeaveDetailEditMode(scope = document) {
+  if (!detailHasUnsavedChanges(scope)) return true;
+  notify("Bitte Änderungen zuerst speichern.", "error");
+  return false;
 }
 
 function collectSegment(row, date) {
@@ -774,6 +920,7 @@ async function refreshEntries({ silent = true } = {}) {
   }
   if (state.entryEditDate && !rows.some(row => row.date === state.entryEditDate)) {
     state.entryEditDate = null;
+    state.entrySegmentEditDate = null;
     drawEntries();
     return;
   }
@@ -951,6 +1098,7 @@ function drawEntries() {
   updateEntryFilterSummary(rows.length);
   if (state.entryEditDate && !rows.some(row => row.date === state.entryEditDate)) {
     state.entryEditDate = null;
+    state.entrySegmentEditDate = null;
   }
   if (!rows.length) {
     target.innerHTML = `<div class="empty">Keine Einträge für diese Filter gefunden.</div>`;
@@ -1000,7 +1148,10 @@ function drawEntries() {
   });
   target.querySelectorAll(".edit-entry").forEach(button => {
     button.addEventListener("click", () => {
-      state.entryEditDate = state.entryEditDate === button.dataset.date ? null : button.dataset.date;
+      const nextDate = state.entryEditDate === button.dataset.date ? null : button.dataset.date;
+      if (state.entrySegmentEditDate !== nextDate && !canLeaveDetailEditMode(document.getElementById("entry-edit-panel"))) return;
+      state.entryEditDate = nextDate;
+      if (state.entrySegmentEditDate !== nextDate) state.entrySegmentEditDate = null;
       drawEntries();
     });
   });
@@ -1108,27 +1259,25 @@ async function renderEntryEditor(date, { showLoading = true } = {}) {
   if (showLoading) panel.innerHTML = `<div class="loading">Lade Eintrag ${escapeHtml(date)} …</div>`;
   const detail = await api("day_detail", date);
   if (state.entryEditDate !== date) return;
+  const editing = state.entrySegmentEditDate === date;
   panel.innerHTML = `
     <div class="page-head compact">
       <div>
-        <h2>${date} bearbeiten</h2>
-        <p>${escapeHtml(categoryLabel(detail.summary.day_category))} · Ist ${fmtMinutes(detail.summary.actual_minutes)} · Pause ${fmtMinutes(detail.summary.break_minutes)} · Saldo ${signedMinutes(detail.summary.balance_minutes)}</p>
+        <h2>${escapeHtml(dayDetailHeading(date))}</h2>
+        <p>${escapeHtml(categoryLabel(detail.summary.day_category))} · Ist ${fmtMinutes(detail.summary.actual_minutes)} · Pause ${fmtMinutes(detail.summary.break_minutes)} · Saldo ${signedMinutes(detail.summary.balance_minutes)} · ${editing ? "Bearbeiten" : "Nur anzeigen"}</p>
       </div>
       <div class="row-actions">
-        <button class="secondary copy-day-email" type="button" data-date="${escapeHtml(date)}">E-Mail kopieren</button>
-        <button class="secondary" id="close-entry-editor">Schließen</button>
+        <button class="secondary detail-mode-toggle" type="button" data-detail-context="entries" data-detail-mode="${editing ? "view" : "edit"}">${editing ? "Nur anzeigen" : "Bearbeiten"}</button>
       </div>
     </div>
-    ${renderDayEditorContent(detail, date)}
+    ${renderDayEditorContent(detail, date, { editable: editing })}
   `;
-  document.getElementById("close-entry-editor").addEventListener("click", () => {
-    state.entryEditDate = null;
-    drawEntries();
-  });
-  bindEmailCopyButtons(panel);
-  bindDayForms(date, async () => {
-    await loadEntries();
-  });
+  bindDetailModeButtons(date);
+  if (editing) {
+    bindDayForms(date, async () => {
+      await loadEntries();
+    });
+  }
 }
 
 function bindEmailCopyButtons(scope = document) {
@@ -3398,7 +3547,9 @@ function openResetDialog() {
       close();
       state.settingsDetailKey = mode === "all" ? "start" : "work";
       state.entryEditDate = null;
+      state.entrySegmentEditDate = null;
       state.calendarDetailDate = null;
+      state.calendarSegmentEditDate = null;
       state.dashboardDetailKey = null;
       notify("Zurücksetzen abgeschlossen");
       await renderSettings();
@@ -3850,6 +4001,7 @@ async function runAutoRefresh({ force = false } = {}) {
 }
 
 async function manualRefreshCurrentView() {
+  if (!canLeaveDetailEditMode(document)) return;
   resetAutoRefreshGuard();
   await refreshCurrentView({ silent: state.view !== "settings" });
   scheduleNextAutoRefresh();
@@ -3909,7 +4061,7 @@ async function refreshCurrentView({ silent = false } = {}) {
 
 function shouldAutoRefresh() {
   const active = document.activeElement;
-  if (state.calendarDetailDate || state.entryEditDate) return false;
+  if (state.calendarSegmentEditDate || state.entrySegmentEditDate) return false;
   if (document.querySelector(".modal-backdrop")) return false;
   if (active?.closest?.("form")) return false;
   if (active?.matches?.("input, select, textarea, [contenteditable='true']")) return false;
@@ -4011,6 +4163,11 @@ function weekdayShort(dateText) {
   const date = new Date(`${dateText}T00:00:00`);
   if (Number.isNaN(date.getTime())) return "";
   return date.toLocaleDateString("de-DE", { weekday: "short" });
+}
+
+function dayDetailHeading(dateText) {
+  const weekday = weekdayLong(dateText);
+  return weekday ? `${weekday} - ${dateText} - Details` : `${dateText} - Details`;
 }
 
 function fileToBase64(file) {

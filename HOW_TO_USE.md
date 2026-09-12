@@ -219,7 +219,7 @@ Getestet werden Datenbank-/Berechnungslogik, Pausenzeit/Arbeitstage, Startdatum/
 10. `Pausenzeit`, `Arbeitstage`, `Startdatum der Zeiterfassung`, `Anfangssaldo Gleitzeit in Stunden`, manuelle Büro-/Homeoffice-Tage und Startpuffer je Standort testen.
 11. Dashboard und Statistiken prüfen: Gleitzeitstand soll als Badge grün/orange/rot erscheinen, Dashboard-Kacheln sollen Details aufklappen.
 12. Dashboard `Officequote` prüfen: Büroanteil soll mit Zeitraum, Mindestquote, Büro, Homeoffice, getrackten und manuellen Tagen aufklappen.
-13. Im Kalender prüfen, dass links die Kalenderwochen stehen; dann einen Tag öffnen, Segmentzeiten ändern, Standort korrigieren und Notiz speichern.
+13. Im Kalender prüfen, dass links die Kalenderwochen stehen; dann einen Tag öffnen, in den Bearbeiten-Modus wechseln, mehrere Segmentzeiten/Standorte sowie die Notiz ändern und alles mit `Änderungen speichern` sichern.
 14. In `Einträge` suchen und Filter für Tagesart, Standort, Saldo, Status, Notizen sowie Arbeitszeit testen; danach eine Zeile über `Details` öffnen, Segment ändern/löschen und prüfen, dass die Liste aktualisiert wird.
 15. Im `Arbeitszeit Rechner` die aktuelle Woche füllen, eine Zeile auf `Enduhrzeit berechnen` stellen und prüfen, dass Start, Pause, Soll, Ziel-Gleitzeit und Endzeit sofort neu berechnet werden.
 16. Backup über App oder Tray auslösen und Datei in `data/backups/` prüfen.

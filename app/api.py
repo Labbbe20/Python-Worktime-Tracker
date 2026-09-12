@@ -198,6 +198,40 @@ class WorktimeApi:
             calculations.recalculate_day(conn, date)
             return self.day_detail(date)
 
+    def save_day_edits(self, date: str, payload: dict[str, Any]) -> dict[str, Any]:
+        affected_dates = {date}
+        with self._locked_conn() as conn:
+            with database.transaction(conn):
+                for segment in payload.get("segments", []):
+                    segment_id = int(segment.get("id") or 0)
+                    existing = database.get_segment(conn, segment_id)
+                    if not existing:
+                        raise ValueError("Segment nicht gefunden.")
+                    old_date = existing["date"]
+                    affected_dates.add(old_date)
+                    segment_type = segment.get("type", "WORK")
+                    start_time = normalize_time_input(segment.get("start_time", current_time_str()))
+                    end_value = segment.get("end_time") or None
+                    end_time = normalize_time_input(end_value) if end_value else None
+                    location_value = segment.get("location") or None
+                    if segment_type != "WORK":
+                        location_value = None
+                    database.update_segment(
+                        conn,
+                        segment_id,
+                        date=date,
+                        type=segment_type,
+                        start_time=start_time,
+                        end_time=end_time,
+                        location=location_value,
+                        source=segment.get("source", "MANUAL"),
+                    )
+                if "note" in payload:
+                    database.replace_note(conn, date, payload.get("note") or "")
+                for date_text in sorted(affected_dates):
+                    calculations.recalculate_day(conn, date_text)
+        return self.day_detail(date)
+
     def save_day_type(self, payload: dict[str, Any]) -> dict[str, Any]:
         with self._locked_conn() as conn:
             date = payload["date"]

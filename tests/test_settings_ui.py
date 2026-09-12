@@ -116,6 +116,62 @@ def test_email_template_settings_and_copy_buttons_are_available(tmp_path, monkey
     assert copied == ["Test"]
 
 
+def test_day_edits_save_all_segments_and_note_together(tmp_path):
+    api = WorktimeApi(tmp_path / "database.db")
+
+    first = api.save_segment(
+        {
+            "date": "2026-07-06",
+            "type": "WORK",
+            "start_time": "08:00",
+            "end_time": "12:00",
+            "location": "HOME",
+            "source": "MANUAL",
+        }
+    )["segments"][0]
+    second = api.save_segment(
+        {
+            "date": "2026-07-06",
+            "type": "WORK",
+            "start_time": "13:00",
+            "end_time": "16:00",
+            "location": "HOME",
+            "source": "MANUAL",
+        }
+    )["segments"][1]
+
+    detail = api.save_day_edits(
+        "2026-07-06",
+        {
+            "segments": [
+                {
+                    "id": first["id"],
+                    "type": "WORK",
+                    "start_time": "06:45",
+                    "end_time": "12:00",
+                    "location": "OFFICE",
+                    "source": "MANUAL",
+                },
+                {
+                    "id": second["id"],
+                    "type": "WORK",
+                    "start_time": "12:45",
+                    "end_time": "17:00",
+                    "location": "OFFICE",
+                    "source": "MANUAL",
+                },
+            ],
+            "note": "Alles gemeinsam gespeichert",
+        },
+    )
+
+    assert detail["segments"][0]["start_time"] == "06:45:00"
+    assert detail["segments"][0]["location"] == "OFFICE"
+    assert detail["segments"][1]["start_time"] == "12:45:00"
+    assert detail["segments"][1]["end_time"] == "17:00:00"
+    assert detail["note"] == "Alles gemeinsam gespeichert"
+
+
 def test_calendar_view_uses_compact_responsive_layout():
     script = APP_JS.read_text(encoding="utf-8")
     styles = APP_CSS.read_text(encoding="utf-8")
@@ -220,6 +276,49 @@ def test_dashboard_other_details_use_insight_cards_and_trends():
     assert ".dashboard-insight-card:hover" in styles
     assert ".dashboard-period-card:hover" in styles
     assert ".dashboard-progress:hover" in styles
+
+
+def test_segment_details_default_to_view_mode_and_only_edit_mode_blocks_refresh():
+    script = APP_JS.read_text(encoding="utf-8")
+    styles = APP_CSS.read_text(encoding="utf-8")
+
+    assert "calendarSegmentEditDate" in script
+    assert "entrySegmentEditDate" in script
+    assert "detail-mode-toggle" in script
+    assert "detail-view-mode" in script
+    assert "detail-edit-mode" in script
+    assert "Abbrechen" in script
+    assert "Ungespeicherte Änderungen verwerfen" in script
+    assert "updateDetailModeButtonLabel" in script
+    assert "dayDetailHeading(date)" in script
+    assert "dayDetailHeading(dateText)" in script
+    assert "weekday ? `${weekday} - ${dateText} - Details`" in script
+    assert "close-day-detail" in script
+    assert "close-entry-editor" not in script
+    assert "entry-email-button" in script
+    entry_editor = script.split("async function renderEntryEditor", 1)[1].split("function bindEmailCopyButtons", 1)[0]
+    assert "copy-day-email" not in entry_editor
+    assert "E-Mail kopieren" not in entry_editor
+    assert "canLeaveDetailEditMode" in script
+    assert "Bitte Änderungen zuerst speichern." in script
+    assert "save_day_edits" in script
+    assert "Änderungen speichern" in script
+    assert "save-segment" not in script
+    assert "Notiz speichern" not in script
+    assert "segment-remove" in script
+    assert "segment-edit-table" in script
+    assert 'aria-label="Aktionen"' in script
+    assert "button.segment-remove" in styles
+    assert ".segment-edit-table col.segment-col-actions" in styles
+    assert "width: 62px" in styles
+    assert "if (!canLeaveDetailEditMode(document)) return false;" in script
+    assert "if (!canLeaveDetailEditMode(document)) return;" in script
+    assert 'nextMode === "view" && !canLeaveDetailEditMode' not in script
+    assert "state.calendarSegmentEditDate || state.entrySegmentEditDate" in script
+    assert "state.calendarDetailDate || state.entryEditDate" not in script
+    assert "renderSegmentTable(detail.segments, date, { editable: false })" in script
+    assert "renderSegmentTable(detail.segments, date, { editable: true })" in script
+    assert ".view-mode-hint" not in styles
 
 
 def test_statistics_uses_readable_month_progress_instead_of_canvas_chart():

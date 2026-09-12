@@ -2159,6 +2159,39 @@ td.row-actions > button + button {
   margin-left: 8px;
 }
 
+.segment-edit-table {
+  table-layout: fixed;
+}
+
+.segment-edit-table col.segment-col-type {
+  width: 26%;
+}
+
+.segment-edit-table col.segment-col-time {
+  width: 15%;
+}
+
+.segment-edit-table col.segment-col-location {
+  width: auto;
+}
+
+.segment-edit-table col.segment-col-actions {
+  width: 62px;
+}
+
+.segment-edit-table .segment-action-heading,
+.segment-edit-table .segment-action-cell {
+  text-align: center;
+}
+
+.segment-edit-table .segment-action-cell {
+  vertical-align: middle;
+}
+
+.segment-edit-table .segment-action-cell .segment-remove {
+  margin-inline: auto;
+}
+
 .calendar-detail-panel .row-actions,
 .entry-inline-panel .row-actions {
   align-items: center;
@@ -2495,7 +2528,8 @@ td.row-actions > button + button {
   font-weight: 700;
 }
 
-button.calculator-remove {
+button.calculator-remove,
+button.segment-remove {
   display: grid;
   place-items: center;
   align-self: end;
@@ -2511,7 +2545,8 @@ button.calculator-remove {
   line-height: 1;
 }
 
-button.calculator-remove:hover:not(:disabled) {
+button.calculator-remove:hover:not(:disabled),
+button.segment-remove:hover {
   background: var(--danger);
   border-color: var(--danger);
   color: #ffffff;
@@ -2524,6 +2559,15 @@ button.calculator-remove:disabled {
   color: var(--muted);
   border-color: transparent;
   opacity: 0.38;
+}
+
+.calendar-detail-panel td.row-actions > button.segment-remove,
+.entry-inline-panel td.row-actions > button.segment-remove {
+  min-width: 38px;
+}
+
+.detail-save-actions {
+  justify-content: flex-end;
 }
 
 .form-row {
@@ -2853,6 +2897,12 @@ button.calculator-remove:disabled {
 
   .table-wrap td.row-actions button {
     width: 100%;
+  }
+
+  .table-wrap td.row-actions button.segment-remove {
+    justify-self: end;
+    width: 38px;
+    min-width: 38px;
   }
 
   .table-wrap td.row-actions > button + button {
