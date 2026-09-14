@@ -70,6 +70,11 @@ DEFAULT_SETTINGS: dict[str, str] = {
     "absence_reminder_mode": "off",
     "absence_reminder_days": "14",
     "absence_reminder_time": "09:00",
+    "homeoffice_auto_break_enabled": "0",
+    "homeoffice_auto_break_mode": "exact",
+    "homeoffice_auto_break_start": "12:00",
+    "homeoffice_auto_break_end": "12:45",
+    "homeoffice_auto_break_flex_minutes": "15",
     "pa_email_template": (
         "Hallo zusammen,\n\n"
         "hier meine Arbeitszeiten aus dem Homeoffice vom {datum}:\n\n"

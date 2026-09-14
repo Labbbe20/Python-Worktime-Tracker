@@ -103,6 +103,18 @@ def test_email_template_settings_and_copy_buttons_are_available(tmp_path, monkey
     assert "copy_to_clipboard" in script
     assert "homeoffice_email" in script
     assert "E-Mail kopieren" in script
+    assert "Homeoffice-Pause für E-Mail" in script
+    assert "homeoffice_auto_break_enabled" in script
+    assert "homeoffice_auto_break_mode" in script
+    assert "homeoffice_auto_break_flex_minutes" in script
+    assert "data-setting-switch" in script
+    assert "segmented-setting" in script
+    assert 'data-show-when="homeoffice_auto_break_enabled:1"' in script
+    assert 'data-show-when="homeoffice_auto_break_enabled:1;homeoffice_auto_break_mode:exact"' in script
+    assert 'data-show-when="homeoffice_auto_break_enabled:1;homeoffice_auto_break_mode:flexible"' in script
+    assert "settingControlValue" in script
+    assert ".switch-control" in styles
+    assert ".segmented-setting" in styles
     assert ".entry-email-button" in styles
     assert "Montag, 06.07.2026" in draft["body"]
     assert "Arbeit: 06:45 bis 12:00 Uhr" in draft["body"]
@@ -170,6 +182,97 @@ def test_day_edits_save_all_segments_and_note_together(tmp_path):
     assert detail["segments"][1]["start_time"] == "12:45:00"
     assert detail["segments"][1]["end_time"] == "17:00:00"
     assert detail["note"] == "Alles gemeinsam gespeichert"
+
+
+def test_homeoffice_auto_break_splits_continuous_segment_for_email(tmp_path):
+    api = WorktimeApi(tmp_path / "database.db")
+    settings = api.save_settings(
+        {
+            "homeoffice_auto_break_enabled": "1",
+            "homeoffice_auto_break_start": "12:00",
+            "homeoffice_auto_break_end": "12:45",
+        }
+    )["settings"]
+
+    detail = api.save_segment(
+        {
+            "date": "2026-07-06",
+            "type": "WORK",
+            "start_time": "06:45",
+            "end_time": "17:00",
+            "location": "HOME",
+            "source": "MANUAL",
+        }
+    )
+    draft = api.homeoffice_email("2026-07-06")
+
+    assert settings["homeoffice_auto_break_enabled"] == "1"
+    assert settings["homeoffice_auto_break_mode"] == "exact"
+    assert settings["homeoffice_auto_break_start"] == "12:00"
+    assert settings["homeoffice_auto_break_end"] == "12:45"
+    assert [
+        (segment["type"], segment["start_time"], segment["end_time"], segment["location"])
+        for segment in detail["segments"]
+    ] == [
+        ("WORK", "06:45:00", "12:00:00", "HOME"),
+        ("BREAK", "12:00:00", "12:45:00", None),
+        ("WORK", "12:45:00", "17:00:00", "HOME"),
+    ]
+    assert "Pause: 12:00 bis 12:45 Uhr" in draft["body"]
+
+
+def test_homeoffice_auto_break_can_use_flexible_start_window(tmp_path):
+    api = WorktimeApi(tmp_path / "database.db")
+    settings = api.save_settings(
+        {
+            "homeoffice_auto_break_enabled": "1",
+            "homeoffice_auto_break_mode": "flexible",
+            "daily_break_minutes": "30",
+            "homeoffice_auto_break_start": "12:00",
+            "homeoffice_auto_break_flex_minutes": "15",
+        }
+    )["settings"]
+
+    detail = api.save_segment(
+        {
+            "date": "2026-07-06",
+            "type": "WORK",
+            "start_time": "06:45",
+            "end_time": "17:00",
+            "location": "HOME",
+            "source": "MANUAL",
+        }
+    )
+    break_segment = next(segment for segment in detail["segments"] if segment["type"] == "BREAK")
+
+    start_minutes = int(break_segment["start_time"][:2]) * 60 + int(break_segment["start_time"][3:5])
+    end_minutes = int(break_segment["end_time"][:2]) * 60 + int(break_segment["end_time"][3:5])
+    assert settings["homeoffice_auto_break_mode"] == "flexible"
+    assert settings["homeoffice_auto_break_flex_minutes"] == "15"
+    assert 11 * 60 + 45 <= start_minutes <= 12 * 60 + 15
+    assert end_minutes - start_minutes == 30
+    assert start_minutes != 12 * 60
+    assert detail["segments"][0]["end_time"] == break_segment["start_time"]
+    assert detail["segments"][2]["start_time"] == break_segment["end_time"]
+
+
+def test_homeoffice_auto_break_stays_inactive_until_enabled(tmp_path):
+    api = WorktimeApi(tmp_path / "database.db")
+
+    detail = api.save_segment(
+        {
+            "date": "2026-07-06",
+            "type": "WORK",
+            "start_time": "06:45",
+            "end_time": "17:00",
+            "location": "HOME",
+            "source": "MANUAL",
+        }
+    )
+
+    assert len(detail["segments"]) == 1
+    assert detail["segments"][0]["start_time"] == "06:45:00"
+    assert detail["segments"][0]["end_time"] == "17:00:00"
 
 
 def test_calendar_view_uses_compact_responsive_layout():

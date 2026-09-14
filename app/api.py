@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import binascii
 import calendar
+import hashlib
 import json
 import logging
 import shutil
@@ -150,43 +151,45 @@ class WorktimeApi:
 
     def save_segment(self, payload: dict[str, Any]) -> dict[str, Any]:
         with self._locked_conn() as conn:
-            date = payload["date"]
-            old_date = date
-            segment_type = payload.get("type", "WORK")
-            start_time = normalize_time_input(payload.get("start_time", current_time_str()))
-            end_value = payload.get("end_time") or None
-            end_time = normalize_time_input(end_value) if end_value else None
-            location_value = payload.get("location") or None
-            if segment_type != "WORK":
-                location_value = None
-            if payload.get("id"):
-                existing = database.get_segment(conn, int(payload["id"]))
-                if existing:
-                    old_date = existing["date"]
-                database.update_segment(
-                    conn,
-                    int(payload["id"]),
-                    date=date,
-                    type=segment_type,
-                    start_time=start_time,
-                    end_time=end_time,
-                    location=location_value,
-                    source=payload.get("source", "MANUAL"),
-                )
-            else:
-                database.add_segment(
-                    conn,
-                    date,
-                    segment_type,
-                    start_time,
-                    end_time=end_time,
-                    location=location_value,
-                    source=payload.get("source", "MANUAL"),
-                )
-            calculations.recalculate_day(conn, old_date)
-            if old_date != date:
-                calculations.recalculate_day(conn, date)
-            return self.day_detail(date)
+            with database.transaction(conn):
+                date = payload["date"]
+                old_date = date
+                segment_type = payload.get("type", "WORK")
+                start_time = normalize_time_input(payload.get("start_time", current_time_str()))
+                end_value = payload.get("end_time") or None
+                end_time = normalize_time_input(end_value) if end_value else None
+                location_value = payload.get("location") or None
+                if segment_type != "WORK":
+                    location_value = None
+                if payload.get("id"):
+                    existing = database.get_segment(conn, int(payload["id"]))
+                    if existing:
+                        old_date = existing["date"]
+                    database.update_segment(
+                        conn,
+                        int(payload["id"]),
+                        date=date,
+                        type=segment_type,
+                        start_time=start_time,
+                        end_time=end_time,
+                        location=location_value,
+                        source=payload.get("source", "MANUAL"),
+                    )
+                else:
+                    database.add_segment(
+                        conn,
+                        date,
+                        segment_type,
+                        start_time,
+                        end_time=end_time,
+                        location=location_value,
+                        source=payload.get("source", "MANUAL"),
+                    )
+                _apply_homeoffice_auto_break(conn, date)
+                calculations.recalculate_day(conn, old_date)
+                if old_date != date:
+                    calculations.recalculate_day(conn, date)
+        return self.day_detail(date)
 
     def delete_segment(self, segment_id: int) -> dict[str, Any]:
         with self._locked_conn() as conn:
@@ -228,6 +231,7 @@ class WorktimeApi:
                     )
                 if "note" in payload:
                     database.replace_note(conn, date, payload.get("note") or "")
+                _apply_homeoffice_auto_break(conn, date)
                 for date_text in sorted(affected_dates):
                     calculations.recalculate_day(conn, date_text)
         return self.day_detail(date)
@@ -790,6 +794,109 @@ def _remaining_minimum_break_minutes(current_break_minutes: int, settings: dict[
     return max(0, configured_break - max(0, int(current_break_minutes)))
 
 
+def _apply_homeoffice_auto_break(conn, date: str) -> bool:
+    settings = database.get_settings(conn)
+    if settings.get("homeoffice_auto_break_enabled") != "1":
+        return False
+    try:
+        configured_start = normalize_time_input(settings.get("homeoffice_auto_break_start", "12:00"))
+        configured_end = normalize_time_input(settings.get("homeoffice_auto_break_end", "12:45"))
+    except ValueError:
+        return False
+    configured_start_minutes = _time_to_minutes(configured_start)
+    flexible = settings.get("homeoffice_auto_break_mode") == "flexible"
+    configured_duration = _time_to_minutes(configured_end) - configured_start_minutes
+    if flexible:
+        break_duration = _safe_nonnegative_int(settings.get("daily_break_minutes"), configured_duration)
+        if break_duration <= 0:
+            break_duration = configured_duration
+    else:
+        break_duration = configured_duration
+    if break_duration <= 0:
+        return False
+    flex_minutes = _safe_nonnegative_int(settings.get("homeoffice_auto_break_flex_minutes"), 0)
+
+    segments = database.get_segments_for_date(conn, date)
+    if any(segment["type"] == "BREAK" for segment in segments):
+        return False
+
+    for segment in segments:
+        if segment["type"] != "WORK" or segment["location"] != "HOME" or not segment["end_time"]:
+            continue
+        start_time = segment["start_time"]
+        end_time = segment["end_time"]
+        break_start, break_end = _homeoffice_auto_break_window(
+            date,
+            segment,
+            configured_start_minutes,
+            break_duration,
+            flex_minutes if flexible else 0,
+        )
+        if not break_start or not break_end:
+            continue
+        if not (start_time <= break_start and break_end <= end_time and start_time < end_time):
+            continue
+
+        if start_time < break_start:
+            database.update_segment(conn, int(segment["id"]), end_time=break_start)
+            if break_end < end_time:
+                database.add_segment(
+                    conn,
+                    date,
+                    "WORK",
+                    break_end,
+                    end_time=end_time,
+                    location="HOME",
+                    source="MANUAL",
+                )
+        elif break_end < end_time:
+            database.update_segment(conn, int(segment["id"]), start_time=break_end)
+        else:
+            return False
+        database.add_segment(conn, date, "BREAK", break_start, break_end, source="MANUAL")
+        return True
+
+    return False
+
+
+def _homeoffice_auto_break_window(
+    date: str,
+    segment,
+    configured_start_minutes: int,
+    break_duration: int,
+    flex_minutes: int,
+) -> tuple[str | None, str | None]:
+    segment_start = _time_to_minutes(segment["start_time"])
+    segment_end = _time_to_minutes(segment["end_time"])
+    if segment_end - segment_start < break_duration:
+        return None, None
+
+    if flex_minutes <= 0:
+        break_start_minutes = configured_start_minutes
+    else:
+        earliest = max(configured_start_minutes - flex_minutes, segment_start)
+        latest = min(configured_start_minutes + flex_minutes, segment_end - break_duration)
+        if latest < earliest:
+            return None, None
+        span = latest - earliest
+        seed = f"{date}|{segment['id']}|{segment['start_time']}|{segment['end_time']}|{configured_start_minutes}|{break_duration}|{flex_minutes}"
+        digest = hashlib.sha256(seed.encode("utf-8")).digest()
+        break_start_minutes = earliest + (int.from_bytes(digest[:4], "big") % (span + 1))
+
+    break_end_minutes = break_start_minutes + break_duration
+    return _minutes_to_time(break_start_minutes), _minutes_to_time(break_end_minutes)
+
+
+def _time_to_minutes(value: str) -> int:
+    hours, minutes, *_ = str(value).split(":")
+    return int(hours) * 60 + int(minutes)
+
+
+def _minutes_to_time(minutes: int) -> str:
+    minutes = max(0, min(minutes, 23 * 60 + 59))
+    return f"{minutes // 60:02d}:{minutes % 60:02d}:00"
+
+
 def _segment_type_label(value: str | None) -> str:
     return {"WORK": "Arbeit", "BREAK": "Pause", "ABSENCE": "Abwesenheit"}.get(value or "", "Unbekannt")
 
@@ -867,6 +974,7 @@ def _settings_for_ui(settings: dict[str, str]) -> dict[str, str]:
     result["home_end_buffer_minutes"] = _setting_int_for_ui(result.get("home_end_buffer_minutes", "0"))
     result["auto_refresh_interval_seconds"] = _setting_int_for_ui(result.get("auto_refresh_interval_seconds", "60"))
     result["absence_reminder_days"] = _setting_int_for_ui(result.get("absence_reminder_days", "14"))
+    result["homeoffice_auto_break_flex_minutes"] = _setting_int_for_ui(result.get("homeoffice_auto_break_flex_minutes", "15"))
     return result
 
 
@@ -1050,6 +1158,7 @@ def _normalize_settings_input(values: dict[str, Any]) -> dict[str, str]:
         "auto_resume_after_break_enabled",
         "auto_resume_after_absence_enabled",
         "preload_app_on_tracker_start",
+        "homeoffice_auto_break_enabled",
     ):
         if key in normalized:
             normalized[key] = _normalize_bool_setting(normalized[key])
@@ -1063,6 +1172,7 @@ def _normalize_settings_input(values: dict[str, Any]) -> dict[str, str]:
         ("office_baseline_period_mode", {"all", "current_year", "rolling_365", "custom"}),
         ("office_quota_period_mode", {"all", "current_year", "rolling_365", "custom"}),
         ("office_quota_mixed_day_mode", {"split", "office", "homeoffice"}),
+        ("homeoffice_auto_break_mode", {"exact", "flexible"}),
         ("standard_absence_1224_mode", {"off", "vacation_half", "vacation_full", "flextime_half", "flextime_full", "holiday"}),
         ("standard_absence_1231_mode", {"off", "vacation_half", "vacation_full", "flextime_half", "flextime_full", "holiday"}),
         ("standard_absence_bridge_mode", {"off", "vacation_half", "vacation_full", "flextime_half", "flextime_full", "holiday"}),
@@ -1073,9 +1183,22 @@ def _normalize_settings_input(values: dict[str, Any]) -> dict[str, str]:
         ("work_popup_custom_time", "Popup-Uhrzeit"),
         ("daily_info_popup_time", "Info-Popup-Uhrzeit"),
         ("absence_reminder_time", "Abwesenheits-Erinnerung"),
+        ("homeoffice_auto_break_start", "Homeoffice-Pause Start"),
+        ("homeoffice_auto_break_end", "Homeoffice-Pause Ende"),
     ):
         if key in normalized and normalized[key]:
             normalized[key] = normalize_time_input(normalized[key])[:5]
+    if "homeoffice_auto_break_flex_minutes" in normalized:
+        normalized["homeoffice_auto_break_flex_minutes"] = _normalize_nonnegative_int(
+            normalized["homeoffice_auto_break_flex_minutes"],
+            "Puffer der Homeoffice-Pause",
+        )
+    if (
+        normalized.get("homeoffice_auto_break_start")
+        and normalized.get("homeoffice_auto_break_end")
+        and normalized["homeoffice_auto_break_end"] <= normalized["homeoffice_auto_break_start"]
+    ):
+        raise ValueError("Ende der Homeoffice-Pause muss nach dem Beginn liegen.")
     return normalized
 
 

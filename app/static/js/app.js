@@ -2888,6 +2888,73 @@ function renderBufferSettings(settings) {
 
 function renderEmailSettings(settings) {
   return `
+    <fieldset class="settings-field field-wide auto-break-settings">
+      <legend>Homeoffice-Pause für E-Mail</legend>
+      <div class="auto-break-hero">
+        <div>
+          <span class="auto-break-eyebrow">Automatik</span>
+          <strong>Automatisch einfügen</strong>
+          <small class="help-text">Fügt beim Speichern automatisch ein Pausensegment ein, wenn ein Homeoffice-Arbeitssegment die eingestellte Pause vollständig überdeckt und noch keine Pause am Tag vorhanden ist.</small>
+        </div>
+        <label class="switch-control">
+          <input name="homeoffice_auto_break_enabled" data-setting-switch type="checkbox" value="1" ${settings.homeoffice_auto_break_enabled === "1" ? "checked" : ""}>
+          <span class="switch-track" aria-hidden="true"></span>
+          <span class="switch-status switch-status-on">An</span>
+          <span class="switch-status switch-status-off">Aus</span>
+        </label>
+      </div>
+      <div class="auto-break-config">
+        <section class="auto-break-card auto-break-mode-card conditional-field" data-show-when="homeoffice_auto_break_enabled:1">
+          <div class="auto-break-card-head">
+            <span class="auto-break-card-title">Zeitmodus</span>
+            <small>Wähle, ob die Pause exakt gesetzt oder leicht variiert werden soll.</small>
+          </div>
+          <div class="segmented-setting" role="radiogroup" aria-label="Zeitmodus Homeoffice-Pause">
+            <label>
+              <input type="radio" name="homeoffice_auto_break_mode" value="exact" ${settings.homeoffice_auto_break_mode !== "flexible" ? "checked" : ""}>
+              <span>Exakt</span>
+            </label>
+            <label>
+              <input type="radio" name="homeoffice_auto_break_mode" value="flexible" ${settings.homeoffice_auto_break_mode === "flexible" ? "checked" : ""}>
+              <span>Flexibel</span>
+            </label>
+          </div>
+        </section>
+        <section class="auto-break-card conditional-field" data-show-when="homeoffice_auto_break_enabled:1;homeoffice_auto_break_mode:exact">
+          <div class="auto-break-card-head">
+            <span class="auto-break-card-title">Exaktes Zeitfenster</span>
+            <small>Die Pause wird genau mit diesen Zeiten eingetragen.</small>
+          </div>
+          <div class="auto-break-field-grid">
+            <label>
+              Pause ab
+              <input name="homeoffice_auto_break_start" type="time" value="${escapeHtml(settings.homeoffice_auto_break_start || "12:00")}">
+            </label>
+            <label>
+              Pause bis
+              <input name="homeoffice_auto_break_end" type="time" value="${escapeHtml(settings.homeoffice_auto_break_end || "12:45")}">
+            </label>
+          </div>
+        </section>
+        <section class="auto-break-card conditional-field" data-show-when="homeoffice_auto_break_enabled:1;homeoffice_auto_break_mode:flexible">
+          <div class="auto-break-card-head">
+            <span class="auto-break-card-title">Flexibler Start</span>
+            <small>Die Pausenlänge kommt aus der automatischen Pausenzeit im Arbeitsmodell.</small>
+          </div>
+          <div class="auto-break-field-grid">
+            <label>
+              Ungefähr um
+              <input name="homeoffice_auto_break_start" type="time" value="${escapeHtml(settings.homeoffice_auto_break_start || "12:00")}">
+            </label>
+            <label>
+              Puffer
+              <input name="homeoffice_auto_break_flex_minutes" type="number" min="0" step="1" value="${escapeHtml(settings.homeoffice_auto_break_flex_minutes || "15")}">
+              <small class="help-text">Minuten früher oder später.</small>
+            </label>
+          </div>
+        </section>
+      </div>
+    </fieldset>
     <label class="field-wide">Vorlage für PA-E-Mail
       <textarea name="pa_email_template" rows="10">${escapeHtml(settings.pa_email_template || "")}</textarea>
       <small class="help-text">Verfügbare Platzhalter: {datum}, {datum_iso}, {wochentag}, {segmente}, {beginn}, {ende}, {arbeitszeit}, {pause}, {saldo}.</small>
@@ -3410,21 +3477,48 @@ function openSettingsHelp(key) {
 
 function bindConditionalFields(scope) {
   scope.querySelectorAll("[data-show-when]").forEach(field => {
-    const [name, expected] = String(field.dataset.showWhen || "").split(":");
-    const control = scope.elements?.[name];
-    if (!name || !control) return;
-    const expectedValues = new Set(String(expected || "").split("|").filter(Boolean));
+    const conditions = String(field.dataset.showWhen || "")
+      .split(";")
+      .map(item => {
+        const [name, expected] = item.split(":");
+        return { name, expectedValues: new Set(String(expected || "").split("|").filter(Boolean)) };
+      })
+      .filter(condition => condition.name && scope.elements?.[condition.name]);
+    if (!conditions.length) return;
     const inputs = [...field.querySelectorAll("input, select, textarea, button")];
     const update = () => {
-      const visible = expectedValues.has(String(control.value));
+      const visible = conditions.every(condition => {
+        return condition.expectedValues.has(String(settingControlValue(scope, condition.name)));
+      });
       field.hidden = !visible;
       inputs.forEach(input => {
         input.disabled = !visible;
       });
     };
-    control.addEventListener("change", update);
+    conditions.forEach(condition => {
+      settingControls(scope, condition.name).forEach(control => {
+        control.addEventListener("change", update);
+      });
+    });
     update();
   });
+}
+
+function settingControls(scope, name) {
+  const control = scope.elements?.[name];
+  if (!control) return [];
+  if (control.tagName) return [control];
+  return Array.from(control).filter(Boolean);
+}
+
+function settingControlValue(scope, name) {
+  const controls = settingControls(scope, name);
+  if (!controls.length) return "";
+  const checkbox = controls.find(control => control.type === "checkbox");
+  if (checkbox) return checkbox.checked ? (checkbox.value || "1") : "0";
+  const checked = controls.find(control => control.checked);
+  if (checked) return checked.value;
+  return controls[0].value || "";
 }
 
 function bindStandardAbsenceRules(form) {
@@ -3479,6 +3573,9 @@ function readStandardAbsenceRules(scope) {
 
 function collectSettingsValues(form) {
   const values = Object.fromEntries(new FormData(form).entries());
+  form.querySelectorAll("input[data-setting-switch]").forEach(input => {
+    values[input.name] = input.checked ? (input.value || "1") : "0";
+  });
   if (form.querySelector("#standard-absence-rules-value")) {
     values.standard_absence_rules = JSON.stringify(readStandardAbsenceRules(form));
   }
